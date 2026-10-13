@@ -1,0 +1,30 @@
+# ShareEverything - 磁盘资源发布与 Web 分享平台
+#
+# @author SilenceDB
+# @license Apache-2.0
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 SilenceDB
+
+# 统一行尾，避免 Windows / macOS / Linux 之间来回改行尾产生无意义的 diff
+* text=auto eol=lf
+
+# Windows 批处理必须是 CRLF：LF 结尾的 .bat 在 cmd.exe 里跳转标签、拼接语句都可能出错
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Shell 脚本必须是 LF，否则在某些系统上会报 "bad interpreter"
+*.sh text eol=lf
+
+# 二进制文件不做行尾转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.zip binary
+*.exe binary
+*.db binary
+*.node binary

@@ -1,0 +1,32 @@
+{
+  "name": "share-everything",
+  "version": "0.1.0",
+  "private": true,
+  "description": "磁盘资源发布与 Web 分享平台：Fastify + TypeScript + Vue3",
+  "author": "SilenceDB",
+  "license": "Apache-2.0",
+  "workspaces": [
+    "server",
+    "web"
+  ],
+  "scripts": {
+    "dev": "concurrently -n server,web -c cyan,magenta \"npm:dev:server\" \"npm:dev:web\"",
+    "dev:server": "npm run dev -w server",
+    "dev:web": "npm run dev -w web",
+    "build": "npm run build -w web && npm run build -w server",
+    "typecheck": "npm run typecheck -w server && npm run typecheck -w web",
+    "check:i18n": "tsx scripts/check-i18n.ts",
+    "pack": "node scripts/build.mjs",
+    "pack:zip": "node scripts/build.mjs --zip",
+    "pack:offline": "node scripts/build.mjs --offline",
+    "db:push": "npm run db:push -w server",
+    "db:studio": "npm run db:studio -w server"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0",
+    "pm2": "^7.0.4"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

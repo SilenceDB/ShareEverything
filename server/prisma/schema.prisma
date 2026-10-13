@@ -1,0 +1,170 @@
+// ShareEverything - 磁盘资源发布与 Web 分享平台
+//
+// @author SilenceDB
+// @license Apache-2.0
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 SilenceDB
+
+// ShareEverything 数据模型
+// 修改后执行：npm run db:push -w server
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id         String   @id @default(cuid())
+  email      String   @unique
+  username   String   @unique
+  password   String
+  role       String   @default("USER") // USER | ADMIN
+  quotaBytes BigInt   @default(2147483648) // 默认 2GB 配额
+  /**
+   * 令牌版本号（改密即踢下线）。
+   *
+   * 签发 JWT 时把它一起写进载荷，鉴权时与库里的值比对，不相等就判定令牌已作废。
+   * 于是只要密码发生变动 —— 管理员重置、本人修改、登录页找回 —— 把它 +1，
+   * 此前签发的所有令牌立刻失效，不必维护会话表。
+   */
+  tokenVersion Int    @default(0)
+  createdAt  DateTime @default(now())
+
+  files  FileItem[]
+  mounts Mount[]
+  shares Share[]
+  uploads UploadTask[]
+}
+
+// 用户通过网页上传、入库管理的文件
+model FileItem {
+  id       String   @id @default(cuid())
+  userId   String
+  name     String
+  relPath  String // 相对该用户存储根目录的相对路径，如 docs/a.pdf
+  size     BigInt   @default(0)
+  mime     String?
+  isDir    Boolean  @default(false)
+  parent   String   @default("") // 父目录的相对路径，空串表示根目录
+  hash     String?  // 抽样指纹，用于秒传（格式 sampled:<hex>:<size>）
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  shares Share[]
+
+  @@unique([userId, relPath])
+  @@index([userId, parent])
+  @@index([userId, hash])
+}
+
+// 分片上传任务：分片先落在临时目录，合并完成后写入 FileItem
+model UploadTask {
+  id         String   @id @default(cuid())
+  userId     String
+  name       String
+  parent     String   @default("") // 目标目录的相对路径
+  size       BigInt
+  chunkSize  Int
+  totalChunks Int
+  hash       String?  // 与 FileItem.hash 同格式
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, updatedAt])
+}
+
+// 磁盘发布：资源库里的一个节点。三种类型共用一张表，因而天然可以拼成一棵逻辑树。
+//   kind = FOLDER  逻辑文件夹——只存在于数据库，界面上用来分组，不映射任何磁盘路径
+//   kind = DIR     映射服务器本机的一个真实目录
+//   kind = FILE    映射服务器本机的一个真实文件
+// 注意：这是「共享资源库」而非「我的私有挂载」——所有登录用户都能浏览和下载，
+// userId 只表示发布者（谁创建的），决定了谁能重命名/删除它。
+model Mount {
+  id        String   @id @default(cuid())
+  userId    String
+  /**
+   * 同一父节点下不允许重名。这里不加 @unique 是因为 SQLite 认为多个 NULL 互不相同，
+   * 根节点（parentId = null）之间的重名根本拦不住，只能由应用层统一校验。
+   */
+  name      String
+  kind      String   @default("DIR") // FOLDER | DIR | FILE
+  absPath   String? // FOLDER 恒为 null；DIR / FILE 存 realpath 解析后的绝对路径
+  parentId  String? // 所属逻辑文件夹，null 表示挂在资源库根下
+  sortOrder Int      @default(0) // 同层排序，越小越靠前
+  readOnly  Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  user     User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // 自关联必须用 NoAction：Cascade 在自关联上会形成环，Prisma 会拒绝生成。
+  // 代价是删文件夹得由应用层自底向上递归删，不能指望数据库级联。
+  parent   Mount?  @relation("MountTree", fields: [parentId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  children Mount[] @relation("MountTree")
+  shares   Share[]
+
+  @@index([userId])
+  @@index([parentId])
+}
+
+// 分享链接：可以指向一个上传文件，也可以指向挂载目录里的某个文件
+model Share {
+  id       String    @id @default(cuid())
+  code     String    @unique // URL 里的短码
+  title    String?
+  targetType String  // FILE | MOUNT
+  fileId   String?
+  mountId  String?
+  subPath  String    @default("") // targetType=MOUNT 时，相对挂载点的路径
+  // 目标是目录还是文件。落库而不是每次解析：源文件被删后仍能知道该怎么渲染分享页
+  isDir    Boolean   @default(false)
+  accessCode String? // 提取码
+  expiresAt  DateTime?
+  maxDownloads Int?
+  downloadCount Int  @default(0)
+  createdAt DateTime @default(now())
+
+  createdById String
+  createdBy   User    @relation(fields: [createdById], references: [id], onDelete: Cascade)
+  file        FileItem? @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  mount       Mount?    @relation(fields: [mountId], references: [id], onDelete: Cascade)
+  archiveJobs ArchiveJob[]
+
+  @@index([createdById])
+}
+
+// 后台打包任务：大目录先在服务端打成临时 zip 文件，
+// 之后用普通文件的方式下载，因而支持 Range 断点续传。
+// 小目录不走这里，直接流式打包（见 /api/s/:code/archive）。
+model ArchiveJob {
+  id       String  @id @default(cuid())
+  shareId  String
+  mode     String  // store | smart | deflate
+  status   String  // QUEUED | RUNNING | READY | FAILED
+  fileCount Int     @default(0)
+  totalBytes BigInt @default(0)
+  zipBytes BigInt?
+  processedFiles Int    @default(0)
+  processedBytes BigInt @default(0)
+  zipPath  String?
+  error    String?
+  /**
+   * 下载次数只在这条任务第一次被下载时计入。
+   * 断点续传会发出多个 Range 请求，按请求计数会把次数刷爆。
+   */
+  counted  Boolean @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  /** 过期时间，到点后临时文件与记录一起被清理 */
+  expiresAt DateTime
+
+  share Share @relation(fields: [shareId], references: [id], onDelete: Cascade)
+
+  @@index([shareId, mode, status])
+  @@index([expiresAt])
+}
