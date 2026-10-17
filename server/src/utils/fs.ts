@@ -48,6 +48,54 @@ function cmp(p: string): string {
   return process.platform === 'win32' ? p.toLowerCase() : p
 }
 
+/** 单段名称的最大字节数（UTF-8）；主流文件系统都以 255 字节为上限 */
+const MAX_NAME_BYTES = 255
+
+/**
+ * Windows 保留设备名。
+ *
+ * 只要「第一个点之前的部分」命中就不行 —— `NUL.txt`、`CON.log` 一样会被当成设备。
+ * 这类名字在 Windows 上要么创建失败，要么造出一个删不掉的东西（本项目就吃过 `NUL` 的亏）。
+ */
+const RESERVED_NAME = /^(CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|COM[1-9]|LPT[1-9])$/i
+
+/**
+ * 文件系统不允许的字符。
+ *
+ * - `< > : " | ? *`：Windows 非法；其中 `:` 在 macOS 上还会被显示成 `/`，同样不能留
+ * - 控制字符：`\u0000-\u001F`、`\u007F`
+ * - 双向文本控制符（`\u200E` 等）：不非法，但能做出「显示名与实际名相反」的欺骗文件名
+ */
+const ILLEGAL_CHARS = /[<>:"|?*\u0000-\u001F\u007F\u200E\u200F\u202A-\u202E\u2066-\u2069]/
+
+/**
+ * 校验「单个文件 / 目录名」，返回可直接落盘的名字；不合法就抛错。
+ *
+ * 目录穿越本身由 `safeJoin` 挡着，但光有它不够：名称还会被拼成 `relPath` 存进数据库，
+ * 库里存什么，后面所有查找、下载、删除就都按什么来。于是下面这些写法都会造成
+ * **磁盘与数据库对不上**：
+ *
+ * - `name = 'a/b'`：`safeJoin` 会规整成两级，但库里记的 `parent` 是父目录，
+ *   中间那层没人认领 → 列表里永远看不到它，变成孤儿目录
+ * - `name = '报告 '`（尾部空格）或 `'报告.'`（尾部点）：Windows 会**自动裁掉**再落盘，
+ *   库里却记着带空格的版本 → 之后按库里的名字去操作，一律「文件或目录不存在」
+ * - `name = '..'`：`normalizeRel` 会把它吃掉，实际建出的是别的名字
+ *
+ * 注意这里是**报错而不是静默改写**：把 `'报告 '` 悄悄 trim 成 `'报告'` 看似贴心，
+ * 但用户建的和界面显示的就不是一个名字了，更难排查。
+ */
+export function assertSafeName(raw: unknown): string {
+  const name = typeof raw === 'string' ? raw : ''
+  if (!name) throw new AppError('名称不能为空')
+  if (name.includes('/') || name.includes('\\')) throw new AppError('名称不能包含路径分隔符')
+  if (name !== name.trim() || name.endsWith('.')) throw new AppError('名称首尾不能有空格或点')
+  if (ILLEGAL_CHARS.test(name)) throw new AppError('名称包含非法字符')
+  const stem = name.includes('.') ? name.slice(0, name.indexOf('.')) : name
+  if (RESERVED_NAME.test(stem)) throw new AppError('名称不能使用系统保留名')
+  if (Buffer.byteLength(name, 'utf8') > MAX_NAME_BYTES) throw new AppError('名称过长', 400)
+  return name
+}
+
 /**
  * 在 root 之内拼接路径，越界直接抛错。
  * 这是防止 ../ 目录穿越的唯一入口，所有涉及用户传入路径的地方都必须走这里。

@@ -64,6 +64,7 @@ const mountAllowedRoots: string[] = mountRootsUnrestricted
 const PLACEHOLDER_SECRETS = new Set([
   'please-change-this-secret',
   'dev-secret-please-change',
+  'please-change-this-access-code-key',
   'change-me',
   'secret',
 ])
@@ -95,6 +96,43 @@ function resolveJwtSecret(): { secret: string; source: 'env' | 'file' | 'generat
 const jwtSecret = resolveJwtSecret()
 
 /**
+ * 解析提取码的加密密钥，优先级与环境变量一致：env → 持久化文件 → 现场生成并落盘。
+ *
+ * 为什么必须落盘兜底：提取码是**可逆加密**后入库的，密钥一换，库里所有提取码
+ * 就都解不开了。所以绝不能在「没配」的时候每次启动都随机生成一把新的 ——
+ * 那等于每次重启都把全部提取码废掉。落盘文件与 .jwt-secret 同级同权限，
+ * 同属运行时文件，不入库。打包脚本首次生成 .env 时也会写入随机值。
+ *
+ * 与 JWT 密钥的差别：这里允许填**人类可读的口令**（≥8 字符），
+ * 因为 utils/accessCode.ts 会先跑一遍 scrypt 再当密钥用；
+ * 而 JWT_SECRET 是直接拿去当 HMAC 密钥的，所以要求更长。
+ */
+function resolveAccessCodeKey(): { key: string; source: 'env' | 'file' | 'generated' } {
+  const fromEnv = (process.env.ACCESS_CODE_KEY ?? '').trim()
+  if (fromEnv && !PLACEHOLDER_SECRETS.has(fromEnv)) {
+    if (fromEnv.length < 8) {
+      throw new Error(
+        'ACCESS_CODE_KEY 太短（至少 8 个字符）。提取码靠它加密入库，配置错了会让所有提取码解不开。',
+      )
+    }
+    return { key: fromEnv, source: 'env' }
+  }
+
+  const file = path.join(serverRoot, '.access-code-key')
+  try {
+    const saved = fs.readFileSync(file, 'utf8').trim()
+    if (saved.length >= 32) return { key: saved, source: 'file' }
+  } catch {
+    /* 第一次运行，往下走生成 */
+  }
+  const key = crypto.randomBytes(32).toString('base64url')
+  fs.writeFileSync(file, `${key}\n`, { mode: 0o600 })
+  return { key, source: 'generated' }
+}
+
+const accessCodeKey = resolveAccessCodeKey()
+
+/**
  * 允许跨域访问的来源白名单，逗号或分号分隔。
  *
  * 默认**为空**，而空的意思是「根本不注册 CORS 插件」—— 本应用前后端同源
@@ -117,6 +155,13 @@ export const config = {
   jwtSecret: jwtSecret.secret,
   /** 密钥来源：env = .env 里配的；file = 复用上次生成的；generated = 本次新生成（启动时会提示） */
   jwtSecretSource: jwtSecret.source,
+  /**
+   * 提取码的加密密钥（库内提取码是密文，见 utils/accessCode.ts）。
+   * 换掉它等于作废库里所有提取码 —— 分享本身还在，只是原提取码解不开，需要重设。
+   */
+  accessCodeKey: accessCodeKey.key,
+  /** 同上，来源标记 */
+  accessCodeKeySource: accessCodeKey.source,
   jwtExpiresIn: process.env.JWT_EXPIRES_IN ?? '7d',
   /**
    * JSON / urlencoded 请求体的全局上限。

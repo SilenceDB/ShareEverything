@@ -12,6 +12,7 @@ import path from 'node:path'
 import fastify from 'fastify'
 import cors from '@fastify/cors'
 import multipart from '@fastify/multipart'
+import helmet from '@fastify/helmet'
 import rateLimit from '@fastify/rate-limit'
 import { config } from './config.js'
 import { prisma } from './db.js'
@@ -26,6 +27,7 @@ import { userRoutes } from './routes/users.js'
 import { startArchiveCleanup } from './services/archive.js'
 import { AppError, safeJoin } from './utils/fs.js'
 import { closeLogger, currentLogFile, initLogger } from './utils/logger.js'
+import { isLocalRequest } from './utils/request.js'
 import { buildInfo, versionLabel } from './version.js'
 
 /* ---------- 日志与进程生命周期 ---------- */
@@ -37,6 +39,12 @@ initLogger(config.logDir, { keepDays: config.logKeepDays })
 if (config.jwtSecretSource === 'generated') {
   console.warn('[jwt] 未配置 JWT_SECRET，已生成随机密钥并保存到 .jwt-secret（请勿外泄，也不要提交到仓库）')
   console.warn('      换一把：删掉该文件后重启；固定下来：在 .env 里写 JWT_SECRET=<随机字符串>')
+}
+
+// 提取码的加密密钥同样兜底落盘。要特别提醒：它一换，库里已有的提取码就全解不开。
+if (config.accessCodeKeySource === 'generated') {
+  console.warn('[access-code] 未配置 ACCESS_CODE_KEY，已生成随机密钥并保存到 .access-code-key')
+  console.warn('            库内提取码用它加密，该文件丢失/被换掉将导致所有提取码解不开（需重设）')
 }
 
 const startedAt = new Date()
@@ -115,6 +123,69 @@ app.setNotFoundHandler((req, reply) => {
   }
   reply.code(404).send({ error: 'Not Found' })
 })
+
+/* ---------- 安全响应头 ---------- */
+
+/**
+ * helmet 把一组安全响应头统一加上：CSP、`X-Content-Type-Options`、
+ * `X-Frame-Options`、`Referrer-Policy` 等等。
+ *
+ * 有两个默认值必须改掉，否则在**内网 HTTP 部署**下会直接把站点搞挂：
+ *
+ * 1. **HSTS**（默认开，max-age 半年）。浏览器收到后会记住「这个主机必须走 HTTPS」，
+ *    之后再用 `http://` 访问会被自动升级成 `https://` —— 而服务端只有 HTTP，
+ *    于是整个站点打不开，并且在 max-age 到期之前很难撤销。所以这里关掉，
+ *    **等真正上了 HTTPS 再打开**（见 README「上线前必做」）。
+ * 2. **CSP 的 `upgrade-insecure-requests`**。道理同上：它让浏览器把页面里所有
+ *    `http://` 请求升级成 `https://`，纯 HTTP 部署下等于全部请求失败。
+ *
+ * 另外 CSP 这里没有沿用 helmet 的默认策略（`useDefaults: false`），而是按下述原则
+ * 逐条写死：本项目是 Vite 构建的单页应用，产物只有**一个外链 module 脚本 + 一个外链 CSS**，
+ * 页面里没有内联脚本、没有内联事件处理器、没有 `eval`、没有 Web Worker、没有 blob URL，
+ * 因此 `script-src` 可以严格到 `'self'`，连内联脚本属性一起禁掉。
+ */
+await app.register(helmet, {
+  // 见上面的第 1 条：HTTP 部署下发 HSTS 有害，上 HTTPS 后要改回来
+  hsts: false,
+
+  contentSecurityPolicy: {
+    useDefaults: false,
+    directives: {
+      defaultSrc: ["'self'"],
+      baseUri: ["'self'"],
+      objectSrc: ["'none'"],
+      /**
+       * Vue 的 `@click` 编译成 `addEventListener`，产物里没有任何 `onclick=` 这类
+       * 内联事件处理器，所以可以彻底禁掉内联脚本属性。
+       */
+      scriptSrc: ["'self'"],
+      scriptSrcAttr: ["'none'"],
+      /**
+       * 必须留 `'unsafe-inline'`：`style-src` 同时兜住了 CSP3 的 `style-src-attr`，
+       * 而 Vue 的 `:style`、Element Plus 的定位样式写的都是元素的 style **属性**。
+       * 少了它界面会大面积错版（不是「稍微丑一点」，是布局直接散架）。
+       */
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      imgSrc: ["'self'", 'data:'],
+      fontSrc: ["'self'", 'data:'],
+      // 前端只调同源接口：开发时 Vite 把 /api 代理到本进程，生产共用一个端口
+      connectSrc: ["'self'"],
+      formAction: ["'self'"],
+      // 不需要被任何页面嵌进 iframe；与下面的 frameguard: deny 互为备份
+      frameAncestors: ["'none'"],
+      // 注意：**不要**在这里加 upgrade-insecure-requests，理由见上面的第 2 条
+    },
+  },
+
+  frameguard: { action: 'deny' },
+  referrerPolicy: { policy: 'no-referrer' },
+  // 本站资源只供本站页面加载
+  crossOriginResourcePolicy: { policy: 'same-origin' },
+  // COEP 是为 SharedArrayBuffer 这类高级特性准备的，本项目用不上，
+  // 开了反而会给将来引入任何跨源资源埋雷
+  crossOriginEmbedderPolicy: false,
+})
+console.log('[helmet] 安全响应头已启用；HSTS 未开启（HTTP 部署下发它有害，上 HTTPS 后需打开）')
 
 /* ---------- 跨域 ---------- */
 
@@ -222,35 +293,61 @@ if (webDist) {
 // 打包任务留下的临时文件：启动时先扫一遍，之后定时清理
 startArchiveCleanup()
 
-app.get('/api/health', async () => ({
-  ok: true,
-  version: buildInfo.version,
-  time: new Date().toISOString(),
-  pid: process.pid,
-  startedAt: startedAt.toISOString(),
-  uptimeSec: Math.round(process.uptime()),
-  node: process.version,
-  storageRoot: config.storageRoot,
-  logFile: currentLogFile(),
-  webDist,
-}))
+/**
+ * 健康检查。
+ *
+ * 这个接口**公开、无需登录**，所以它只回答「活着吗、跑的是哪个版本」。
+ * 早期版本把 pid、启动时间、存储根目录、日志路径一起返回，等于对外公布服务器的
+ * 目录布局、进程号与运行时长（后者能推断重启与补丁周期）。这些信息排障时确实有用，
+ * 但排障的人本来就在服务器旁边 —— 于是改成 **仅本机请求附带诊断字段**。
+ *
+ * 本机判定复用 `utils/request.ts` 的 fail-closed 实现：只看 TCP 对端地址，
+ * 带任何转发头都一律不算本机。因此反向代理部署下会稳定地只给最小集合，
+ * 不会因为「所有请求都来自 127.0.0.1」而把诊断信息放给所有人。
+ */
+app.get('/api/health', async (req, reply) => {
+  // 健康检查的意义就是拿当下状态，别让中间层缓存住
+  reply.header('Cache-Control', 'no-store')
+
+  const base = {
+    ok: true,
+    version: buildInfo.version,
+    time: new Date().toISOString(),
+  }
+  if (!isLocalRequest(req)) return base
+
+  return {
+    ...base,
+    /** ↓ 以下字段仅本机可见 */
+    pid: process.pid,
+    startedAt: startedAt.toISOString(),
+    uptimeSec: Math.round(process.uptime()),
+    node: process.version,
+    storageRoot: config.storageRoot,
+    logFile: currentLogFile(),
+    webDist,
+  }
+})
 
 /**
  * 版本信息。公开、无需登录：排障时想确认线上跑的是哪个包，
  * 打开这个地址（或看界面侧边栏）就知道，不必登进系统。
+ *
+ * 这里只放「这个包是什么」，不放运行时状态（pid / 启动时间 / uptime）——
+ * 那些属于诊断信息，已经收进 `/api/health` 且仅本机可见。
  */
-app.get('/api/version', async () => ({
-  name: 'ShareEverything',
-  version: buildInfo.version,
-  builtAt: buildInfo.builtAt,
-  mode: buildInfo.mode,
-  /** 打包时用的 Node 版本；下面这个是当前进程实际运行的版本，换机器后能看出差异 */
-  packedNode: buildInfo.node,
-  node: process.version,
-  pid: process.pid,
-  startedAt: startedAt.toISOString(),
-  uptimeSec: Math.round(process.uptime()),
-}))
+app.get('/api/version', async (_req, reply) => {
+  reply.header('Cache-Control', 'no-store')
+  return {
+    name: 'ShareEverything',
+    version: buildInfo.version,
+    builtAt: buildInfo.builtAt,
+    mode: buildInfo.mode,
+    /** 打包时用的 Node 版本；下面这个是当前进程实际运行的版本，换机器后能看出差异 */
+    packedNode: buildInfo.node,
+    node: process.version,
+  }
+})
 
 /** 前端产物目录：优先用配置，其次按部署形态依次探测 */
 function resolveWebDist(): string | null {

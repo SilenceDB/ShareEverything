@@ -73,6 +73,9 @@ export interface FileItem {
 /** 磁盘发布：全站共享资源，ownerName 只是记录谁发布的 */
 export type MountKind = 'FOLDER' | 'DIR' | 'FILE'
 
+/** 谁能看见这一项：全站 / 仅发布者 / 发布者 + 指定用户（管理员一律可见） */
+export type MountVisibility = 'PUBLIC' | 'PRIVATE' | 'PROTECTED'
+
 export interface MountItem {
   id: string
   name: string
@@ -87,6 +90,18 @@ export interface MountItem {
   ownerName: string
   /** 发布者本人或管理员可以改名 / 移动 / 取消发布 */
   canManage: boolean
+  visibility: MountVisibility
+  /** 授权名单里的用户 id；只有 canManage 时才带内容，其余情况为空数组 */
+  grants: string[]
+  /** 当前用户是否被单独授权（PROTECTED 的名单里有我） */
+  granted: boolean
+}
+
+/** 授权候选：把发布项设成 PROTECTED 时从这些人里挑 */
+export interface GrantableUser {
+  id: string
+  username: string
+  role: string
 }
 
 export interface DiskEntry {
@@ -125,6 +140,10 @@ export interface ShareItem {
   kind: 'FILE' | 'DIR'
   subPath: string
   hasAccessCode: boolean
+  /** 提取码明文。只有「我的分享」这类创建者视角才有值，公开接口恒为 null */
+  accessCode?: string | null
+  /** 提取码解不开了（服务端换了 ACCESS_CODE_KEY），需要重设 */
+  accessCodeBroken?: boolean
   expiresAt: string | null
   maxDownloads: number | null
   downloadCount: number
@@ -194,7 +213,13 @@ export interface UploadStatusResult {
   uploaded: number[]
 }
 
-/** 服务端构建信息：版本号就是最后一次打包的时刻，如 2026.10.12.1031 */
+/**
+ * 服务端构建信息：版本号就是最后一次打包的时刻，如 2026.10.12.1031。
+ *
+ * 这里只描述「这个包是什么」。进程 pid / 启动时间 / uptime 属于运行时诊断，
+ * 服务端已不再随公开接口下发（`/api/health` 里也只对本机可见），所以类型里一并去掉，
+ * 免得声明与实际响应对不上。
+ */
 export interface BuildInfo {
   name: string
   version: string
@@ -204,9 +229,6 @@ export interface BuildInfo {
   mode: string
   packedNode: string | null
   node: string
-  pid: number
-  startedAt: string
-  uptimeSec: number
 }
 
 export const api = {
@@ -331,9 +353,21 @@ export const api = {
       parentId?: string | null
       /** FOLDER 不需要；DIR / FILE 必填 */
       absPath?: string
+      visibility?: MountVisibility
+      /** visibility 为 PROTECTED 时生效：授权给这些用户 */
+      grants?: string[]
     }) => http.post<MountItem>('/mounts', data).then((r) => r.data),
-    update: (id: string, data: { name?: string; parentId?: string | null; sortOrder?: number }) =>
-      http.patch<MountItem>(`/mounts/${id}`, data).then((r) => r.data),
+    update: (
+      id: string,
+      data: {
+        name?: string
+        parentId?: string | null
+        sortOrder?: number
+        visibility?: MountVisibility
+        grants?: string[]
+      },
+    ) => http.patch<MountItem>(`/mounts/${id}`, data).then((r) => r.data),
+    grantableUsers: () => http.get<GrantableUser[]>('/mounts/grantable-users').then((r) => r.data),
     remove: (id: string) =>
       http.delete<{ ok: boolean; removed: number }>(`/mounts/${id}`).then((r) => r.data),
     browse: (id: string, sub = '') =>
@@ -370,6 +404,9 @@ export const api = {
       expiresInHours?: number
       maxDownloads?: number
     }) => http.post<ShareItem>('/shares', data).then((r) => r.data),
+    /** 重设或清除提取码：传 null / 空字符串表示去掉 */
+    updateCode: (id: string, accessCode: string | null) =>
+      http.patch<ShareItem>(`/shares/${id}`, { accessCode }).then((r) => r.data),
     remove: (id: string) => http.delete(`/shares/${id}`).then((r) => r.data),
     publicInfo: (code: string) =>
       http

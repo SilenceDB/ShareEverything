@@ -29,6 +29,19 @@ const form = reactive({
   maxDownloads: 0,
 })
 
+/**
+ * 随机生成一个提取码（8 位，去掉了 0/O/1/I/L 这些分不清的字符）。
+ *
+ * 在浏览器本地生成，不为此单开一个接口 —— 服务端只负责校验长度与字符集。
+ * `getRandomValues` 是真随机源；32 能整除 2^32，取模不会引入偏置。
+ */
+function generateCode() {
+  const alphabet = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'
+  const bytes = new Uint32Array(8)
+  crypto.getRandomValues(bytes)
+  form.accessCode = Array.from(bytes, (n) => alphabet[n % alphabet.length]).join('')
+}
+
 watch(
   () => props.modelValue,
   (v) => {
@@ -77,7 +90,12 @@ async function create() {
         <el-input v-model="form.title" :placeholder="t('shareDialog.titlePlaceholder')" />
       </el-form-item>
       <el-form-item :label="t('shareDialog.accessCode')">
-        <el-input v-model="form.accessCode" :placeholder="t('shareDialog.accessCodePlaceholder')" />
+        <el-input v-model="form.accessCode" :placeholder="t('shareDialog.accessCodePlaceholder')">
+          <template #append>
+            <el-button @click="generateCode">{{ t('shareDialog.generate') }}</el-button>
+          </template>
+        </el-input>
+        <span class="hint block">{{ t('shareDialog.accessCodeMinHint') }}</span>
       </el-form-item>
       <el-form-item :label="t('shareDialog.expires')">
         <el-input-number v-model="form.expiresInHours" :min="0" :step="24" />
@@ -100,5 +118,12 @@ async function create() {
   margin-left: 10px;
   font-size: 12px;
   color: #909399;
+}
+/* 输入框下面那行提示要独占一行，跟 expires / maxDownloads 的并排提示不一样 */
+.hint.block {
+  display: block;
+  margin-left: 0;
+  margin-top: 4px;
+  line-height: 1.4;
 }
 </style>

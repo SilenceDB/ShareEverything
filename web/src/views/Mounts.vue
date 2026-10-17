@@ -11,7 +11,14 @@
 import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { api, type DiskEntry, type MountItem, type MountKind } from '../api'
+import {
+  api,
+  type DiskEntry,
+  type GrantableUser,
+  type MountItem,
+  type MountKind,
+  type MountVisibility,
+} from '../api'
 import { useUserStore } from '../stores/user'
 import { humanSize } from '../utils/format'
 import ShareDialog from '../components/ShareDialog.vue'
@@ -119,6 +126,31 @@ const KIND_TAG: Record<MountKind, 'info' | 'warning' | 'success'> = {
   FILE: 'success',
 }
 
+/* ---------------- 可见范围 ---------------- */
+
+const VIS_OPTIONS: MountVisibility[] = ['PUBLIC', 'PRIVATE', 'PROTECTED']
+const VIS_TAG: Record<MountVisibility, 'success' | 'info' | 'warning'> = {
+  PUBLIC: 'success',
+  PRIVATE: 'info',
+  PROTECTED: 'warning',
+}
+const visibilityLabel = computed<Record<MountVisibility, string>>(() => ({
+  PUBLIC: t('mounts.visibilityPublic'),
+  PRIVATE: t('mounts.visibilityPrivate'),
+  PROTECTED: t('mounts.visibilityProtected'),
+}))
+
+/** 授权候选名单，只在真正要用（新建 / 改可见范围）时才拉一次 */
+const users = ref<GrantableUser[]>([])
+async function loadUsers() {
+  if (users.value.length) return
+  try {
+    users.value = await api.mounts.grantableUsers()
+  } catch (e: any) {
+    ElMessage.error(e.message)
+  }
+}
+
 async function load() {
   loading.value = true
   try {
@@ -154,17 +186,34 @@ function openRow(row: MountItem) {
 /* ---------------- 新建 ---------------- */
 
 const createVisible = ref(false)
-const createForm = ref<{ kind: MountKind; name: string; absPath: string; parentId: string }>({
+const createForm = ref<{
+  kind: MountKind
+  name: string
+  absPath: string
+  parentId: string
+  visibility: MountVisibility
+  grants: string[]
+}>({
   kind: 'FOLDER',
   name: '',
   absPath: '',
   parentId: ROOT_ID,
+  visibility: 'PUBLIC',
+  grants: [],
 })
 const pickerVisible = ref(false)
 
 function openCreate(kind: MountKind) {
-  createForm.value = { kind, name: '', absPath: '', parentId: selectedId.value }
+  createForm.value = {
+    kind,
+    name: '',
+    absPath: '',
+    parentId: selectedId.value,
+    visibility: 'PUBLIC',
+    grants: [],
+  }
   createVisible.value = true
+  void loadUsers()
 }
 
 function onPicked(path: string) {
@@ -192,6 +241,8 @@ async function submitCreate() {
       kind: f.kind,
       parentId: f.parentId === ROOT_ID ? null : f.parentId,
       absPath: f.kind === 'FOLDER' ? undefined : f.absPath,
+      visibility: f.visibility,
+      grants: f.visibility === 'PROTECTED' ? f.grants : [],
     })
     createVisible.value = false
     ElMessage.success(t('mounts.added'))
@@ -262,6 +313,38 @@ async function remove(row: MountItem) {
   try {
     const res = await api.mounts.remove(row.id)
     ElMessage.success(res.removed > 1 ? t('mounts.removed', res.removed) : t('mounts.unpublished'))
+    await load()
+  } catch (e: any) {
+    ElMessage.error(e.message)
+  }
+}
+
+/* ---------------- 调整可见范围 ---------------- */
+
+const visVisible = ref(false)
+const visTarget = ref<MountItem | null>(null)
+const visValue = ref<MountVisibility>('PUBLIC')
+const visGrants = ref<string[]>([])
+
+function openVisibility(row: MountItem) {
+  visTarget.value = row
+  visValue.value = row.visibility
+  // 只有 canManage 时后端才给名单；其余情况这里就是空数组，本来也不该改
+  visGrants.value = [...row.grants]
+  visVisible.value = true
+  void loadUsers()
+}
+
+async function submitVisibility() {
+  const row = visTarget.value
+  if (!row) return
+  try {
+    await api.mounts.update(row.id, {
+      visibility: visValue.value,
+      grants: visValue.value === 'PROTECTED' ? visGrants.value : [],
+    })
+    visVisible.value = false
+    ElMessage.success(t('mounts.visibilitySaved'))
     await load()
   } catch (e: any) {
     ElMessage.error(e.message)
@@ -413,6 +496,16 @@ onMounted(async () => {
               <el-tag v-if="row.ownerName" size="small" type="info">{{ row.ownerName }}</el-tag>
             </template>
           </el-table-column>
+          <el-table-column :label="t('mounts.visibility')" width="150">
+            <template #default="{ row }">
+              <el-tag size="small" :type="VIS_TAG[row.visibility as MountVisibility]">
+                {{ visibilityLabel[row.visibility as MountVisibility] }}
+              </el-tag>
+              <el-tag v-if="row.granted" size="small" type="warning">
+                {{ t('mounts.sharedWithMe') }}
+              </el-tag>
+            </template>
+          </el-table-column>
           <el-table-column :label="t('common.actions')" width="320">
             <template #default="{ row }">
               <el-button size="small" type="primary" @click="openRow(row)">
@@ -438,6 +531,9 @@ onMounted(async () => {
                   <el-dropdown-menu>
                     <el-dropdown-item @click="rename(row)">{{ t('mounts.rename') }}</el-dropdown-item>
                     <el-dropdown-item @click="openMove(row)">{{ t('mounts.moveTo') }}</el-dropdown-item>
+                    <el-dropdown-item @click="openVisibility(row)">
+                      {{ t('mounts.changeVisibility') }}
+                    </el-dropdown-item>
                     <el-dropdown-item divided @click="remove(row)">
                       {{ t('mounts.unpublish') }}
                     </el-dropdown-item>
@@ -490,6 +586,28 @@ onMounted(async () => {
       <el-form-item :label="t('mounts.parentLabel')">
         <el-select v-model="createForm.parentId" style="width: 100%">
           <el-option v-for="o in folderOptions" :key="o.id" :label="o.label" :value="o.id" />
+        </el-select>
+      </el-form-item>
+      <el-form-item :label="t('mounts.visibilityLabel')">
+        <el-select v-model="createForm.visibility" style="width: 100%">
+          <el-option
+            v-for="v in VIS_OPTIONS"
+            :key="v"
+            :label="visibilityLabel[v]"
+            :value="v"
+          />
+        </el-select>
+        <div class="field-hint">{{ t('mounts.visibilityHint') }}</div>
+      </el-form-item>
+      <el-form-item v-if="createForm.visibility === 'PROTECTED'" :label="t('mounts.grantLabel')">
+        <el-select
+          v-model="createForm.grants"
+          multiple
+          filterable
+          style="width: 100%"
+          :placeholder="t('mounts.grantPlaceholder')"
+        >
+          <el-option v-for="u in users" :key="u.id" :label="u.username" :value="u.id" />
         </el-select>
       </el-form-item>
     </el-form>
@@ -558,6 +676,34 @@ onMounted(async () => {
     <template #footer>
       <el-button @click="moveVisible = false">{{ t('common.cancel') }}</el-button>
       <el-button type="primary" @click="submitMove">{{ t('common.confirm') }}</el-button>
+    </template>
+  </el-dialog>
+
+  <!-- 调整可见范围：所有人 / 仅自己 / 指定用户 -->
+  <el-dialog v-model="visVisible" :title="t('mounts.visibilityDialogTitle')" width="480px">
+    <p class="move-hint">{{ t('mounts.visibilityFor', { name: visTarget?.name ?? '' }) }}</p>
+    <el-form label-position="top">
+      <el-form-item :label="t('mounts.visibilityLabel')">
+        <el-select v-model="visValue" style="width: 100%">
+          <el-option v-for="v in VIS_OPTIONS" :key="v" :label="visibilityLabel[v]" :value="v" />
+        </el-select>
+        <div class="field-hint">{{ t('mounts.visibilityHint') }}</div>
+      </el-form-item>
+      <el-form-item v-if="visValue === 'PROTECTED'" :label="t('mounts.grantLabel')">
+        <el-select
+          v-model="visGrants"
+          multiple
+          filterable
+          style="width: 100%"
+          :placeholder="t('mounts.grantPlaceholder')"
+        >
+          <el-option v-for="u in users" :key="u.id" :label="u.username" :value="u.id" />
+        </el-select>
+      </el-form-item>
+    </el-form>
+    <template #footer>
+      <el-button @click="visVisible = false">{{ t('common.cancel') }}</el-button>
+      <el-button type="primary" @click="submitVisibility">{{ t('common.confirm') }}</el-button>
     </template>
   </el-dialog>
 
@@ -654,5 +800,11 @@ onMounted(async () => {
   margin: 0 0 12px;
   font-size: 13px;
   color: #606266;
+}
+.field-hint {
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #909399;
 }
 </style>

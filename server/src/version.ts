@@ -13,15 +13,16 @@ import path from 'node:path'
 /**
  * 发布版本信息。
  *
- * 版本号由打包脚本按「发包时刻」生成（形如 2026.10.12.1031），落在产物根目录的
- * VERSION / build-info.json 里。这里只负责把它读出来，供启动日志、/api/health、
- * /api/version 使用 —— 这样「线上跑的到底是哪个包」不用靠猜。
+ * 版本号由打包脚本生成，形如 `0.2.0+2026.10.17.1435`：`+` 之前是根 package.json 里的
+ * 语义版本（与 CHANGELOG.md 的条目对应），`+` 之后是打包时刻（区分同版本的多次打包）。
+ * 它落在产物根目录的 VERSION / build-info.json 里，这里只负责读出来，供启动日志、
+ * /api/health、/api/version 使用 —— 这样「线上跑的到底是哪个包」不用靠猜。
  *
  * 开发环境（tsx 直接跑源码）没有这些文件，版本记为 dev：明确区分于任何一次正式发布，
  * 免得把本地误认成某个历史版本。
  */
 export interface BuildInfo {
-  /** 发布版本号，形如 2026.10.12.1031；开发环境为 dev */
+  /** 发布版本号，形如 0.2.0+2026.10.17.1435；开发环境为 dev */
   version: string
   /** 打包时刻（本地时间字符串），开发环境为 null */
   builtAt: string | null

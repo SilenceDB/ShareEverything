@@ -38,6 +38,8 @@ model User {
   mounts Mount[]
   shares Share[]
   uploads UploadTask[]
+  /** 被显式授权可见的发布项（对应 Mount.visibility = PROTECTED） */
+  grants MountGrant[]
 }
 
 // 用户通过网页上传、入库管理的文件
@@ -72,6 +74,14 @@ model UploadTask {
   chunkSize  Int
   totalChunks Int
   hash       String?  // 与 FileItem.hash 同格式
+  /**
+   * 已落盘的分片字节数。配额判定要用它：在途分片同样占着磁盘，
+   * 只统计已落库的 FileItem 会让「并发建 N 个上传任务」变成绕过配额的捷径。
+   *
+   * 分片上传成功时按实际字节数 increment，请求失败时回滚；任务合并或取消后随任务删除。
+   * 用字段而不是每次扫描临时目录，是因为分片可能上万个，逐次 stat 会拖慢每个分片请求。
+   */
+  receivedBytes BigInt  @default(0)
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
@@ -99,9 +109,18 @@ model Mount {
   parentId  String? // 所属逻辑文件夹，null 表示挂在资源库根下
   sortOrder Int      @default(0) // 同层排序，越小越靠前
   readOnly  Boolean  @default(true)
+  /**
+   * 谁能在资源库里看到这一项：PUBLIC 全站 / PRIVATE 仅发布者 / PROTECTED 发布者 + 指定用户。
+   *
+   * 注意它管的是**登录用户在资源库里的可见性**，与「分享出去的外链」是两条独立的通道：
+   * 分享链接自带提取码，本来就是发布者主动开放的，不受这里约束。
+   */
+  visibility String  @default("PUBLIC") // PUBLIC | PRIVATE | PROTECTED
   createdAt DateTime @default(now())
 
   user     User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /** visibility = PROTECTED 时，显式授权给哪些用户 */
+  grants   MountGrant[]
   // 自关联必须用 NoAction：Cascade 在自关联上会形成环，Prisma 会拒绝生成。
   // 代价是删文件夹得由应用层自底向上递归删，不能指望数据库级联。
   parent   Mount?  @relation("MountTree", fields: [parentId], references: [id], onDelete: NoAction, onUpdate: NoAction)
@@ -110,6 +129,20 @@ model Mount {
 
   @@index([userId])
   @@index([parentId])
+}
+
+// PROTECTED 发布项的授权名单：一条 = 允许某个用户看见某个发布项。
+// 双向都用 Cascade：发布项取消发布、或用户被删除时，授权记录跟着清掉，不留悬空行。
+model MountGrant {
+  id      String @id @default(cuid())
+  mountId String
+  userId  String
+
+  mount Mount @relation(fields: [mountId], references: [id], onDelete: Cascade)
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([mountId, userId])
+  @@index([userId])
 }
 
 // 分享链接：可以指向一个上传文件，也可以指向挂载目录里的某个文件

@@ -14,7 +14,15 @@ import type { FastifyInstance } from 'fastify'
 import { prisma } from '../db.js'
 import { config, uploadTmpDir, userStorageDir } from '../config.js'
 import { localeFromRequest, t } from '../i18n/index.js'
-import { AppError, normalizeRel, safeJoin } from '../utils/fs.js'
+import { AppError, assertSafeName, normalizeRel, safeJoin } from '../utils/fs.js'
+import {
+  addPending,
+  allowanceBytes,
+  assertFits,
+  ByteLimitStream,
+  quotaExceeded,
+  quotaState,
+} from '../utils/quota.js'
 import { authGuard } from '../plugins/auth.js'
 import { dto } from './files.js'
 
@@ -83,19 +91,6 @@ async function sweepExpired(userId: string): Promise<void> {
   }
 }
 
-async function usedBytes(userId: string): Promise<bigint> {
-  const agg = await prisma.fileItem.aggregate({
-    where: { userId },
-    _sum: { size: true },
-  })
-  return agg._sum.size ?? BigInt(0)
-}
-
-async function quotaOf(userId: string): Promise<bigint> {
-  const user = await prisma.user.findUnique({ where: { id: userId } })
-  return user?.quotaBytes ?? BigInt(0)
-}
-
 export async function uploadRoutes(app: FastifyInstance) {
   /**
    * 初始化上传任务。
@@ -110,18 +105,26 @@ export async function uploadRoutes(app: FastifyInstance) {
       hash?: string
       chunkSize?: number
     }
-    const name = path.basename(body.name ?? '')
+    // basename 只挡住了目录穿越，挡不住非法字符 / 保留名；那些要等到 complete 合并时才炸，
+    // 那时分片已经全传完了。在建任务这一步就拦掉，用户立刻就能看到原因。
+    const rawName = path.basename(body.name ?? '')
+    if (!rawName) throw new AppError('文件名不能为空', 400)
+    const name = assertSafeName(rawName)
     const size = BigInt(body.size ?? 0)
-    if (!name) throw new AppError('文件名不能为空', 400)
     if (size <= BigInt(0)) throw new AppError('文件大小不合法', 400)
     if (size > BigInt(config.maxUploadSize)) {
       throw new AppError('文件超过单文件上限', 413)
     }
 
-    const quota = await quotaOf(req.user.id)
-    if (quota > BigInt(0) && (await usedBytes(req.user.id)) + size > quota) {
-      throw new AppError('存储空间不足', 413)
-    }
+    /**
+     * 配额按**承诺量**判定，而不是已落盘的字节。
+     *
+     * 这里必须把在途任务声明的大小（reserved）一起算进去：否则用户并发建 N 个任务，
+     * 每个都只在「已用 + 本任务大小」的口径下检查，于是能同时接下 N 倍配额。
+     * 分片随后照常落盘，配额就成了摆设。
+     */
+    const state = await quotaState(req.user.id)
+    assertFits(state.remainingReserved, size)
 
     // 秒传：同用户 + 同指纹 + 同大小，且文件确实还在磁盘上
     if (body.hash) {
@@ -218,22 +221,61 @@ export async function uploadRoutes(app: FastifyInstance) {
         throw new AppError('分片序号不合法', 400)
       }
 
+      /**
+       * 配额：在**写盘之前**算出本次最多还能写多少。
+       *
+       * 分片落在临时目录里同样占着磁盘，早先这里完全没有配额检查 —— 只要 init 放行了，
+       * 后面成千上万个分片想传多少传多少。现在除了写盘前判定，还把额度写进
+       * `ByteLimitStream`：写的过程中一旦逼近上限立刻中断，而不是写完了再删。
+       */
+      const state = await quotaState(req.user.id)
+      const wanted = task.chunkSize + config.minChunkSize
+      const allowance = allowanceBytes(state.remaining, wanted)
+      if (allowance <= 0) {
+        throw new AppError('存储空间不足', 413)
+      }
+
       const dir = uploadTmpDir(task.userId, task.id)
       const final = chunkPath(dir, index)
       const staging = `${final}.writing`
+
+      /**
+       * 重传同一个分片时先把旧文件的字节退掉，否则重传几次 pending 就翻几倍，
+       * 明明磁盘上只有一份，账面上却算了好几份，最后把自己卡死。
+       */
+      const existed = fs.existsSync(final)
+      if (existed) {
+        await addPending(task.id, -BigInt(fs.statSync(final).size))
+        fs.rmSync(final, { force: true })
+      }
+
+      // 先按上限登记这笔在途占用：并发的其他分片请求立刻就能看到它，
+      // 不会各自以为额度还空着。写完再按实际字节数校正回去。
+      await addPending(task.id, BigInt(allowance))
+      let limiter: ByteLimitStream
       try {
         // 先写临时文件再改名，避免中断留下的半截分片被当成已上传
-        await pipeline(data.file, fs.createWriteStream(staging))
+        limiter = new ByteLimitStream(allowance)
+        await pipeline(data.file, limiter, fs.createWriteStream(staging))
       } catch (e) {
         fs.rmSync(staging, { force: true })
+        await addPending(task.id, -BigInt(allowance))
         throw e
       }
-      const got = fs.statSync(staging).size
-      if (got > task.chunkSize + config.minChunkSize) {
+      if (limiter.exceeded) {
         fs.rmSync(staging, { force: true })
+        await addPending(task.id, -BigInt(allowance))
+        throw quotaExceeded()
+      }
+      const got = fs.statSync(staging).size
+      if (got > wanted) {
+        fs.rmSync(staging, { force: true })
+        await addPending(task.id, -BigInt(allowance))
         throw new AppError('分片大小超出预期', 413)
       }
       fs.renameSync(staging, final)
+      // 校正：按真正落盘的字节记账，别让「按上限预留」把额度算虚了
+      await addPending(task.id, BigInt(got) - BigInt(allowance))
 
       await prisma.uploadTask.update({
         where: { id: task.id },
@@ -261,6 +303,18 @@ export async function uploadRoutes(app: FastifyInstance) {
         .code(400)
         .send({ error: t(localeFromRequest(req), '还有分片未上传完成'), missing })
     }
+
+    /**
+     * 配额在**合并之前**判定。
+     *
+     * 分片此刻已经在临时目录里，且计入了 pending；合并只是把它们挪进正式目录，
+     * 净增量 = size - receivedBytes（正常情况下两者相等，净增为 0）。
+     * 早先这个判定放在合并写完之后 —— 那意味着磁盘先被真实占用一整个文件大小，
+     * 判定不过再删掉，等于白写一遍大文件。
+     */
+    const state = await quotaState(task.userId)
+    const net = task.size - task.receivedBytes
+    assertFits(state.remaining, net > BigInt(0) ? net : BigInt(0))
 
     const root = userStorageDir(task.userId)
     const relPath = task.parent ? `${task.parent}/${task.name}` : task.name
@@ -293,12 +347,6 @@ export async function uploadRoutes(app: FastifyInstance) {
           params: [task.size.toString(), actual],
         },
       )
-    }
-
-    const quota = await quotaOf(task.userId)
-    if (quota > BigInt(0) && (await usedBytes(task.userId)) + task.size > quota) {
-      fs.rmSync(staging, { force: true })
-      throw new AppError('存储空间不足', 413)
     }
 
     fs.renameSync(staging, dest)

@@ -1,6 +1,6 @@
 {
   "name": "share-everything",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "磁盘资源发布与 Web 分享平台：Fastify + TypeScript + Vue3",
   "author": "SilenceDB",

@@ -107,9 +107,11 @@ function uploadRequest(opt: any) {
 }
 
 async function doMkdir() {
-  if (!newDirName.value) return
+  // 先抹掉首尾空格：粘贴出来的名字最容易带上，而服务端是拒绝而不是替你 trim 的
+  const name = newDirName.value.trim()
+  if (!name) return
   try {
-    await api.files.mkdir(parent.value, newDirName.value)
+    await api.files.mkdir(parent.value, name)
     mkdirVisible.value = false
     newDirName.value = ''
     ElMessage.success(t('files.mkdirDone'))

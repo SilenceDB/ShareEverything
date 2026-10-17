@@ -32,6 +32,47 @@ async function copyLink(s: ShareItem) {
   await copyTextWithFeedback(linkOf(s), t('shares.copied', { link: linkOf(s) }))
 }
 
+/** 提取码是加密码存储、由服务端解密后回显的，所以这里直接拿得到明文 */
+async function copyCode(s: ShareItem) {
+  if (!s.accessCode) return
+  await copyTextWithFeedback(s.accessCode, t('shares.codeCopied', { code: s.accessCode }))
+}
+
+/**
+ * 重设 / 设置 / 取消提取码。
+ *
+ * 需要一个「改」的入口不只是为了换码：服务端换了 ACCESS_CODE_KEY 之后，
+ * 旧码会解不开（列表里标成不可用），没有这个入口就只能删掉分享重建。
+ */
+async function resetCode(s: ShareItem) {
+  let next: string
+  try {
+    const { value } = await ElMessageBox.prompt(t('shares.resetCodePrompt'), t('shares.colCode'), {
+      inputValue: s.accessCode ?? '',
+      inputPlaceholder: t('shareDialog.accessCodePlaceholder'),
+      // 留空 = 取消提取码；长度规则与服务端保持一致，免得白跑一趟再吃一个 400
+      inputValidator: (v: string) => {
+        const code = (v ?? '').trim()
+        return !code || (code.length >= 4 && code.length <= 64)
+          ? true
+          : t('shares.resetCodeInvalid')
+      },
+      confirmButtonText: t('common.confirm'),
+      cancelButtonText: t('common.cancel'),
+    })
+    next = (value ?? '').trim()
+  } catch {
+    return
+  }
+  try {
+    await api.shares.updateCode(s.id, next || null)
+    ElMessage.success(t('shares.codeUpdated'))
+    await load()
+  } catch (e: any) {
+    ElMessage.error(e.message)
+  }
+}
+
 async function remove(s: ShareItem) {
   try {
     await ElMessageBox.confirm(t('shares.confirmDelete'), t('common.alertTitle'), { type: 'warning' })
@@ -80,9 +121,27 @@ onMounted(load)
           <el-tag v-if="row.isDir" size="small" type="warning">{{ t('common.dir') }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column :label="t('shares.colCode')" width="90">
+      <el-table-column :label="t('shares.colCode')" width="170">
         <template #default="{ row }">
-          {{ row.hasAccessCode ? t('common.needsCode') : t('common.noCode') }}
+          <div class="code-cell">
+            <el-link
+              v-if="row.accessCode"
+              type="primary"
+              :underline="false"
+              class="code"
+              :title="t('shares.copyCode')"
+              @click="copyCode(row)"
+            >
+              {{ row.accessCode }}
+            </el-link>
+            <el-tag v-else-if="row.accessCodeBroken" size="small" type="danger">
+              {{ t('shares.codeBroken') }}
+            </el-tag>
+            <span v-else class="muted">{{ t('common.noCode') }}</span>
+            <el-button link size="small" type="primary" @click="resetCode(row)">
+              {{ row.hasAccessCode ? t('shares.resetCode') : t('shares.setCode') }}
+            </el-button>
+          </div>
         </template>
       </el-table-column>
       <el-table-column :label="t('shares.colDownloads')" width="100">
@@ -118,5 +177,18 @@ onMounted(load)
   font-size: 15px;
   font-weight: 600;
   margin-right: auto;
+}
+.code-cell {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+/* 提取码要能一眼抄走，等宽字体 + 略大的字距比正文更合适 */
+.code {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  letter-spacing: 0.5px;
+}
+.muted {
+  color: #909399;
 }
 </style>

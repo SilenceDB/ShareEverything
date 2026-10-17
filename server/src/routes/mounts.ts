@@ -13,6 +13,12 @@ import type { FastifyInstance } from 'fastify'
 import { prisma } from '../db.js'
 import { canCreateMount, config, isMountPathAllowed } from '../config.js'
 import { AppError, isEscapeLink, normalizeRel, realRoot, resolveInside } from '../utils/fs.js'
+import {
+  assertMountVisible,
+  normalizeVisibility,
+  resolveGrantUserIds,
+  visibleMountIds,
+} from '../utils/mountAccess.js'
 import { authGuard } from '../plugins/auth.js'
 import { streamFile } from '../utils/stream.js'
 
@@ -28,24 +34,36 @@ type MountRow = {
   parentId: string | null
   sortOrder: number
   readOnly: boolean
+  visibility: string
   createdAt: Date
   user?: { id: string; username: string } | null
+  grants?: { userId: string }[]
 }
 
 /**
- * 磁盘发布是「全站共享资源库」：所有登录用户都能看到、浏览、下载，
- * userId 只记录是谁发布的，用于决定谁能改名 / 取消发布。
- *
- * 资源库现在是一棵逻辑树：FOLDER 是纯逻辑分组（不对应任何磁盘路径），
+ * 磁盘发布是一棵逻辑树：FOLDER 是纯逻辑分组（不对应任何磁盘路径），
  * DIR / FILE 才是真正的磁盘映射。三者共用一张表，所以可以任意嵌套。
  *
- * 理由：能登录本服务的人，本身就拥有「自行发布服务器上任意目录」的能力
- * （发布接口没有路径白名单时），按用户隔离挂载记录只是把入口藏起来，
- * 并不构成真正的边界。所以读权限直接放开，改为把「谁可以发布」和
- * 「能发布哪个范围」收窄（见 config 的 MOUNT_CREATE_ROLE / MOUNT_ALLOWED_ROOTS）。
+ * 可见范围由每个节点自己的 `visibility` 决定，三档：
+ *
+ * - `PUBLIC` —— 全站可见（默认，与最早「资源库就是共享的」行为一致）
+ * - `PRIVATE` —— 只有发布者本人（管理员除外，见下）
+ * - `PROTECTED` —— 发布者 + 授权名单里的人（MountGrant）
+ *
+ * 两条规则容易搞错，这里写死：
+ *
+ * 1. **管理员一律可见**。与「改名 / 移动 / 取消发布限发布者或管理员」同一套口径 ——
+ *    否则别人设了私有的项一旦出问题，管理员既看不见也删不掉，只能去改数据库。
+ * 2. **父级收紧则整棵子树一并收紧**。判定沿祖先链取最严的那一级，
+ *    所以把文件夹设成 PRIVATE 就等于整条分支对外关闭，不会出现
+ *    「以为关了、其实子项还是 PUBLIC 被看见」的情况。
+ *
+ * 判定逻辑集中在 `utils/mountAccess.ts`，这里只负责调用。
  */
 function dto(m: MountRow, current: { id: string; role: string }) {
   const isOwner = m.userId === current.id
+  const canManage = isOwner || current.role === 'ADMIN'
+  const grantIds = (m.grants ?? []).map((g) => g.userId)
   return {
     id: m.id,
     name: m.name,
@@ -58,7 +76,15 @@ function dto(m: MountRow, current: { id: string; role: string }) {
     ownerId: m.userId,
     ownerName: m.user?.username ?? '',
     /** 发布者本人或管理员可以改名 / 移动 / 取消发布 */
-    canManage: isOwner || current.role === 'ADMIN',
+    canManage,
+    /** PUBLIC / PRIVATE / PROTECTED */
+    visibility: m.visibility,
+    /**
+     * 授权名单只给能管理的人看。能看到这一项、但不在管理范围的人，
+     * 只需要知道自己是不是被单独授权过（`granted`），不需要知道还有谁。
+     */
+    grants: canManage ? grantIds : [],
+    granted: grantIds.includes(current.id),
   }
 }
 
@@ -197,13 +223,26 @@ function boundaryRoot(realPath: string): string | null {
 }
 
 export async function mountRoutes(app: FastifyInstance) {
-  /** 共享资源库：返回全部节点（扁平结构，由前端拼成树） */
+  /** 资源库：只返回当前用户看得见的节点（扁平结构，由前端拼成树） */
   app.get('/api/mounts', { onRequest: [authGuard] }, async (req) => {
     const list = await prisma.mount.findMany({
-      include: { user: { select: { id: true, username: true } } },
+      include: {
+        user: { select: { id: true, username: true } },
+        grants: { select: { userId: true } },
+      },
       orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
     })
-    return list.map((m) => dto(m, req.user))
+    const visible = await visibleMountIds(req.user)
+    // 过滤后仍是连通的：父不可见的节点连同子树一起被剔除，前端不会拿到孤儿
+    return list.filter((m) => visible.has(m.id)).map((m) => dto(m, req.user))
+  })
+
+  /** 授权候选名单：把发布项设成 PROTECTED 时从这些人里挑 */
+  app.get('/api/mounts/grantable-users', { onRequest: [authGuard] }, async () => {
+    return prisma.user.findMany({
+      select: { id: true, username: true, role: true },
+      orderBy: [{ username: 'asc' }],
+    })
   })
 
   /** 发布：新建逻辑文件夹 / 映射一个真实目录 / 映射一个真实文件 */
@@ -216,6 +255,8 @@ export async function mountRoutes(app: FastifyInstance) {
       kind?: string
       parentId?: string | null
       absPath?: string
+      visibility?: string
+      grants?: unknown
     }
     // 兼容旧客户端：只传 name + absPath 时按「发布目录」处理
     const kind = String(body.kind ?? 'DIR').toUpperCase()
@@ -223,15 +264,24 @@ export async function mountRoutes(app: FastifyInstance) {
 
     const name = normalizeName(body.name)
     const parent = await resolveParent(body.parentId)
+    // 往别人的私有文件夹里塞东西是不合理的：看不见却写进去，等于绕过可见性
+    if (parent) await assertMountVisible(parent.id, req.user)
     const parentId = parent?.id ?? null
     await assertNameFree(parentId, name)
 
-    const include = { user: { select: { id: true, username: true } } }
+    const visibility = normalizeVisibility(body.visibility)
+    const grantIds = visibility === 'PROTECTED' ? await resolveGrantUserIds(body.grants) : []
+
+    const include = {
+      user: { select: { id: true, username: true } },
+      grants: { select: { userId: true } },
+    }
+    const grants = { create: grantIds.map((userId) => ({ userId })) }
 
     // 逻辑文件夹：只登记一个名字，不碰磁盘
     if (kind === 'FOLDER') {
       const node = await prisma.mount.create({
-        data: { userId: req.user.id, name, kind, absPath: null, parentId, readOnly: true },
+        data: { userId: req.user.id, name, kind, absPath: null, parentId, readOnly: true, visibility, grants },
         include,
       })
       return reply.code(201).send(dto(node, req.user))
@@ -258,7 +308,7 @@ export async function mountRoutes(app: FastifyInstance) {
     if (kind === 'DIR') await assertNoDirOverlap(target)
 
     const node = await prisma.mount.create({
-      data: { userId: req.user.id, name, kind, absPath: target, parentId, readOnly: true },
+      data: { userId: req.user.id, name, kind, absPath: target, parentId, readOnly: true, visibility, grants },
       include,
     })
     return reply.code(201).send(dto(node, req.user))
@@ -274,8 +324,16 @@ export async function mountRoutes(app: FastifyInstance) {
       name?: string
       parentId?: string | null
       sortOrder?: number
+      visibility?: string
+      grants?: unknown
     }
-    const data: { name?: string; parentId?: string | null; sortOrder?: number } = {}
+    const data: {
+      name?: string
+      parentId?: string | null
+      sortOrder?: number
+      visibility?: string
+      grants?: { deleteMany: object; create: { userId: string }[] }
+    } = {}
 
     if (body.name !== undefined) {
       const name = normalizeName(body.name)
@@ -288,15 +346,32 @@ export async function mountRoutes(app: FastifyInstance) {
       if (parent && (await collectSubtree(id)).includes(parent.id)) {
         throw new AppError('不能移动到自身或自己的子节点下')
       }
+      // 同样不能搬进自己看不见的文件夹
+      if (parent) await assertMountVisible(parent.id, req.user)
       await assertNameFree(parent?.id ?? null, data.name ?? mount.name, id)
       data.parentId = parent?.id ?? null
     }
     if (body.sortOrder !== undefined) data.sortOrder = Number(body.sortOrder) || 0
 
+    /**
+     * 可见性与授权名单必须一起更新：
+     * 名单是整体替换（先清空再写入），所以从 PROTECTED 改成 PUBLIC 时不会留下过期授权。
+     * 只传其中一个时，另一个按「空缺即空」处理，不会沿用旧值造成意外放权。
+     */
+    if (body.visibility !== undefined || body.grants !== undefined) {
+      data.visibility = normalizeVisibility(body.visibility ?? mount.visibility)
+      const grantIds =
+        data.visibility === 'PROTECTED' ? await resolveGrantUserIds(body.grants) : []
+      data.grants = { deleteMany: {}, create: grantIds.map((userId) => ({ userId })) }
+    }
+
     const updated = await prisma.mount.update({
       where: { id },
       data,
-      include: { user: { select: { id: true, username: true } } },
+      include: {
+        user: { select: { id: true, username: true } },
+        grants: { select: { userId: true } },
+      },
     })
     return dto(updated, req.user)
   })
@@ -388,11 +463,12 @@ export async function mountRoutes(app: FastifyInstance) {
     return { path: realPath, parent, roots, entries }
   })
 
-  /** 浏览真实磁盘目录内容（所有登录用户） */
+  /** 浏览真实磁盘目录内容（受可见性约束） */
   app.get('/api/mounts/:id/browse', { onRequest: [authGuard] }, async (req) => {
     const { id } = req.params as { id: string }
     const { sub } = (req.query ?? {}) as { sub?: string }
     const mount = await getMount(id)
+    await assertMountVisible(id, req.user)
 
     if (mount.kind === 'FOLDER') throw new AppError('逻辑文件夹没有磁盘内容')
     if (mount.kind === 'FILE') throw new AppError('这是一个文件节点，直接下载即可')
@@ -432,12 +508,13 @@ export async function mountRoutes(app: FastifyInstance) {
     return { mount: dto(mount, req.user), sub: normalizeRel(sub ?? ''), items }
   })
 
-  /** 从磁盘发布下载（所有登录用户） */
+  /** 从磁盘发布下载（受可见性约束） */
   // 不按请求数限流，理由同 files.ts 的下载路由：可续传下载天然是大量 Range 请求。
   app.get('/api/mounts/:id/download', { onRequest: [authGuard], config: { rateLimit: false } }, async (req, reply) => {
     const { id } = req.params as { id: string }
     const { sub } = (req.query ?? {}) as { sub?: string }
     const mount = await getMount(id)
+    await assertMountVisible(id, req.user)
 
     if (mount.kind === 'FOLDER') throw new AppError('逻辑文件夹不能直接下载')
 

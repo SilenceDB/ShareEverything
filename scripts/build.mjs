@@ -19,7 +19,7 @@
  *     public/      前端构建产物
  *     prisma/      数据库 schema
  *     package.json 生产依赖（在 dist 里 npm install 即可独立运行）
- *     .env         首次打包时自动生成，含随机 JWT_SECRET；重打包会保留
+ *     .env         首次打包时自动生成，含随机 JWT_SECRET 与 ACCESS_CODE_KEY；重打包会保留
  *     VERSION      本次发布的版本号（= 发包时刻，如 2026.10.12.1031）
  *     build-info.json  版本号 + 打包时间 + 打包模式
  *     start.bat / start.sh
@@ -43,14 +43,15 @@ const releaseDir = path.join(root, 'release')
 
 /* ---------- 发布版本 ---------- */
 /**
- * 版本号 = 发包时刻，形如 2026.10.12.1031（年.月.日.时分）。
+ * 版本号 = 语义化版本 + 发包时刻，形如 0.2.0+2026.10.17.1435。
  *
- * 这个项目没有人工维护的版本梯度，发包时间本身就能唯一定位一次发布，
- * 拿线上显示的版本号就能反查是哪个包、什么时候打的。
+ * 两段各有各的用途，缺一不可：
+ *   前半段（0.2.0）来自根 package.json 的 version，是人工维护的发布梯度，
+ *     跟 CHANGELOG.md 的条目一一对应 —— 用户问「这是哪一版」看的是它。
+ *   后半段（build 元数据）是打包时刻，用来区分同一版本的多次打包
+ *     （同一版改一行重打，也能一眼看出手上是哪个包）。
+ * `+` 之后是 semver 的 build metadata，npm 认可，不会影响依赖解析。
  * 用本地时间而不是 UTC：打包的人看到的就是自己表上的时间。
- *
- * 四段数字 npm 是接受的（实测 `npm install` / package-lock 均正常），
- * 所以产物 package.json 的 version 直接用它，不再另编一套号。
  */
 const pad2 = (n) => String(n).padStart(2, '0')
 const _now = new Date()
@@ -60,8 +61,12 @@ const _D = pad2(_now.getDate())
 const _h = pad2(_now.getHours())
 const _m = pad2(_now.getMinutes())
 const _s = pad2(_now.getSeconds())
-/** 发布版本号，如 2026.10.12.1031 —— 界面、日志、VERSION 文件里显示的就是它 */
+/** 语义化版本，如 0.2.0 —— 人工维护，对应 CHANGELOG.md 的一条记录 */
+const appVersion = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version
+/** 打包时刻，如 2026.10.17.1435 —— 只用来区分同一版本的多次打包 */
 const buildVersion = `${_Y}.${_M}.${_D}.${_h}${_m}`
+/** 完整发布版本，如 0.2.0+2026.10.17.1435 —— 界面、日志、VERSION 文件里显示的就是它 */
+const releaseVersion = `${appVersion}+${buildVersion}`
 /** 紧凑标记，用于文件名，如 20261012-1031 */
 const buildStamp = `${_Y}${_M}${_D}-${_h}${_m}`
 /** 精确到秒的打包时刻，用于区分同一分钟内的多次打包 */
@@ -292,7 +297,7 @@ const preservedEnv = fs.existsSync(envPath) ? fs.readFileSync(envPath, 'utf8') :
 console.log('ShareEverything 打包')
 console.log(`项目根目录: ${root}`)
 console.log(`输出目录  : ${distDir}`)
-console.log(`发布版本  : ${buildVersion}（${builtAt}）`)
+console.log(`发布版本  : ${releaseVersion}（${builtAt}）`)
 console.log(`打包模式  : ${offline ? '离线包（含依赖与 Node 运行时）' : '标准包（目标机器需 npm install）'}`)
 
 await step('清理旧产物', () => {
@@ -340,7 +345,9 @@ await step('生成运行配置', () => {
 
   const pkg = {
     name: 'share-everything',
-    version: buildVersion,
+    // 产物 package.json 只放语义化版本：npm 眼里的「这是哪一版」不该带打包时刻，
+    // 否则每次重打的 version 都不同，依赖比对、升级判断全乱。打包时刻在 VERSION 里。
+    version: appVersion,
     private: true,
     type: 'module',
     main: 'server/index.js',
@@ -367,13 +374,17 @@ await step('生成运行配置', () => {
   // 版本号落到产物根目录：VERSION 给人（和外部脚本）直接看，build-info.json 给程序读。
   // 后端启动时会读它们，界面、日志、/api/version 里显示的版本都来自这里，
   // 所以「现在跑的是哪个包」不用靠猜。
-  fs.writeFileSync(path.join(distDir, 'VERSION'), buildVersion + '\n', 'utf8')
+  fs.writeFileSync(path.join(distDir, 'VERSION'), releaseVersion + '\n', 'utf8')
   fs.writeFileSync(
     path.join(distDir, 'build-info.json'),
     JSON.stringify(
       {
         name: 'share-everything',
-        version: buildVersion,
+        // version 是界面/日志直接显示的那一串（0.2.0+2026.10.17.1435）；
+        // 想单独取出某一段就拆成下面两个字段，别去 parse 字符串。
+        version: releaseVersion,
+        appVersion,
+        build: buildVersion,
         builtAt,
         mode: offline ? 'offline' : 'standard',
         node: process.version,
@@ -384,7 +395,7 @@ await step('生成运行配置', () => {
     ) + '\n',
     'utf8',
   )
-  process.stdout.write(`    发布版本: ${buildVersion}（${builtAt}）\n`)
+  process.stdout.write(`    发布版本: ${releaseVersion}（${builtAt}）\n`)
 
   // .env：首次生成，重打包保留用户改动
   if (preservedEnv) {
@@ -392,13 +403,20 @@ await step('生成运行配置', () => {
     process.stdout.write('    保留已存在的 .env\n')
   } else {
     const secret = crypto.randomBytes(32).toString('hex')
+    // 提取码的加密密钥单独一把，且**必须随 .env 一起备份**：
+    // 它一丢，库里已有的提取码就全都解不开（分享还在，但要重设提取码）。
+    const codeKey = crypto.randomBytes(32).toString('base64url')
     const env = [
-      '# 首次打包自动生成。JWT_SECRET 已是随机值，请不要外泄此文件。',
+      '# 首次打包自动生成。JWT_SECRET / ACCESS_CODE_KEY 已是随机值，请不要外泄此文件。',
       '',
       'PORT=3000',
       'HOST=0.0.0.0',
       'JWT_SECRET=' + secret,
       'JWT_EXPIRES_IN=7d',
+      '',
+      '# 提取码的加密密钥（库内提取码是加密存储的，用于在界面上反复回显）。',
+      '# 重新打包若发现 .env 已存在会保留它，不会换掉这个值 —— 换掉 = 旧提取码全部失效。',
+      'ACCESS_CODE_KEY=' + codeKey,
       '',
       '# SQLite 相对路径以 prisma/schema.prisma 所在目录为基准',
       'DATABASE_URL="file:./dev.db"',
@@ -439,6 +457,13 @@ await step('生成运行配置', () => {
     path.join(root, 'server', '.env.example'),
     path.join(distDir, '.env.example'),
   )
+
+  // 文档跟着包走：CHANGELOG 让人在包目录里就能看到这版改了什么（不用回仓库翻），
+  // LICENSE 是 Apache-2.0 分发时的硬要求。
+  for (const doc of ['CHANGELOG.md', 'LICENSE']) {
+    const src = path.join(root, doc)
+    if (fs.existsSync(src)) fs.copyFileSync(src, path.join(distDir, doc))
+  }
 
   // 启动 / 守护脚本从模板目录整份拷进来。
   // 放在 scripts/dist-template/ 里的好处：它们是能直接读、直接改、能单独验证的真文件，
@@ -502,7 +527,9 @@ await step('生成运行配置', () => {
         '| `.pm2/` | pm2 守护进程的状态，放到包内以便整个目录可以搬走 |',
         '| `ecosystem.config.json` | 守护参数，首次启动自动生成，可手动调 |',
         '| `.env` | 运行配置。**已生成随机 JWT_SECRET，请勿外泄** |',
-        '| `VERSION` / `build-info.json` | 本次发布的版本号与打包时间（版本号即发包时间） |',
+        '| `VERSION` / `build-info.json` | 版本号与打包时间（`0.2.0+2026.10.17.1435`，`+` 前是语义版本，后是打包时刻） |',
+        '| `CHANGELOG.md` | 这一版改了什么。同版本号下靠 `+` 后的打包时刻区分具体是哪个包 |',
+        '| `LICENSE` | Apache-2.0 许可全文 |',
       ]
     : [
         '| 路径 | 内容 |',
@@ -517,7 +544,9 @@ await step('生成运行配置', () => {
         '| `.pm2/` | pm2 守护进程的状态，放到包内以便整个目录可以搬走 |',
         '| `ecosystem.config.json` | 守护参数，首次启动自动生成，可手动调 |',
         '| `.env` | 运行配置。**已生成随机 JWT_SECRET，请勿外泄** |',
-        '| `VERSION` / `build-info.json` | 本次发布的版本号与打包时间（版本号即发包时间） |',
+        '| `VERSION` / `build-info.json` | 版本号与打包时间（`0.2.0+2026.10.17.1435`，`+` 前是语义版本，后是打包时刻） |',
+        '| `CHANGELOG.md` | 这一版改了什么。同版本号下靠 `+` 后的打包时刻区分具体是哪个包 |',
+        '| `LICENSE` | Apache-2.0 许可全文 |',
       ]
 
   fs.writeFileSync(
@@ -527,7 +556,7 @@ await step('生成运行配置', () => {
       '',
       `（${offline ? '离线包：自带 Node 运行时与全部依赖' : '标准包：需要目标机器联网 npm install'}）`,
       '',
-      `**发布版本：${buildVersion}**（打包于 ${builtAt}）`,
+      `**发布版本：${releaseVersion}**（打包于 ${builtAt}）`,
       '',
       ...head,
       '',
@@ -603,15 +632,15 @@ await step('生成运行配置', () => {
       '',
       '## 版本号',
       '',
-      '版本号就是**发包时刻**，形如 `2026.10.12.1031`（年.月.日.时分），紧凑形式是 `20261012-1031`。',
-      '每次打包生成一个新号，同时写进三处：',
+      `形如 \`${releaseVersion}\`：\`+\` 之前是语义版本（每次发版递增，对应 \`CHANGELOG.md\` 的一条记录），`,
+      '`+` 之后是打包时刻（年.月.日.时分，用来区分同版本的多次打包）。',
       '',
-      '- `VERSION` —— 单行版本号，给人看、给外部脚本读',
-      '- `build-info.json` —— 版本号 + 打包时间 + 打包模式 + 打包时的 Node 版本',
-      '- `package.json` 的 `version` —— 让 npm 那边也认得这个版本',
+      '- `VERSION` —— 单行完整版本号，给人看、给外部脚本读',
+      '- `build-info.json` —— 完整版本号，另有 `appVersion` / `build` / 打包时间 / 模式 / Node 版本',
+      '- `package.json` 的 `version` —— 只放语义版本，让 npm 那边认得',
+      '- `CHANGELOG.md` —— 这一版改了什么',
       '',
-      '压缩包名里用的是紧凑形式，两者一一对应。所以一个版本号唯一对应一次打包，',
-      '拿到线上显示的版本号就能反查是哪个包、什么时候打的。',
+      `压缩包名里用 \`share-everything-offline-${buildStamp}.zip\` 这种紧凑形式，时刻部分一一对应。`,
       '服务运行时会读这些文件：界面侧边栏左下角、启动日志、`/api/version` 显示的版本都来自它。',
       '',
       '## 重新打包',
@@ -711,7 +740,7 @@ if (wantZip) {
 /* ------------------------------------------------------------------ */
 
 console.log('\n打包完成')
-console.log(`  发布版本: ${buildVersion}（${builtAt} 打包）`)
+console.log(`  发布版本: ${releaseVersion}（${builtAt} 打包）`)
 console.log(`  产物目录: ${distDir}`)
 if (offline) {
   console.log('  运行方式: 把 dist 拷到目标机器，双击 start.bat（无需 npm install / 无需联网）')

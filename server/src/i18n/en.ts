@@ -23,6 +23,13 @@ export const en: Record<string, string> = {
   '非法路径：不允许访问根目录之外的位置': 'Invalid path: access outside the root directory is not allowed',
   '根目录不存在或无法访问': 'The root directory does not exist or is not accessible',
   '文件或目录不存在': 'File or directory not found',
+  '名称不能包含路径分隔符': 'A name cannot contain path separators (/ or \\)',
+  '名称首尾不能有空格或点':
+    'A name cannot start or end with a space or a dot (Windows strips them silently)',
+  '名称包含非法字符': 'A name contains characters that are not allowed on disk',
+  '名称不能使用系统保留名':
+    'That name is reserved by the operating system (CON, PRN, AUX, NUL, COM1-9, LPT1-9)',
+  '名称过长': 'The name is too long (255 bytes max)',
 
   /* ---------- utils/stream.ts ---------- */
   '文件不存在': 'File not found',
@@ -61,9 +68,11 @@ export const en: Record<string, string> = {
 
   /* ---------- routes/files.ts ---------- */
   '目录名不能为空': 'Directory name is required',
+  '同名文件已存在': 'A file with the same name already exists',
   '请使用 multipart/form-data 上传': 'Please upload using multipart/form-data',
   '没有收到文件': 'No file was received',
   '存储空间不足，上传已取消': 'Not enough storage space — the upload was canceled',
+  '存储空间不足（剩余额度 {}）': 'Not enough storage space ({} remaining)',
   '目录不支持下载': 'Directories cannot be downloaded',
 
   /* ---------- routes/uploads.ts ---------- */
@@ -91,6 +100,8 @@ export const en: Record<string, string> = {
   '只能放进逻辑文件夹里': 'Items can only be placed inside a logical folder',
   '同一层级下已存在同名项目，请换一个名称':
     'An item with this name already exists at the same level. Please choose another name.',
+  '可见性只能是 PUBLIC / PRIVATE / PROTECTED': 'Visibility must be PUBLIC, PRIVATE or PROTECTED',
+  '指定的用户不存在': 'One or more of the selected users does not exist',
   '与已发布目录「{}」存在包含关系，请换一个路径':
     'This path overlaps with the published directory “{}”. Please choose another path.',
   '当前设置下只有管理员可以发布磁盘内容':
@@ -144,6 +155,12 @@ export const en: Record<string, string> = {
   '提取码不正确': 'Incorrect access code',
   '提取码错误次数过多，请 {} 秒后再试':
     'Too many incorrect access code attempts. Please try again in {} seconds.',
+  '提取码格式不正确': 'The access code has an invalid format',
+  '提取码长度需在 {}-{} 位之间': 'The access code must be between {} and {} characters long',
+  '提取码不能包含控制字符或换行': 'The access code cannot contain control characters or line breaks',
+  '提取码无法解密（ACCESS_CODE_KEY 可能已变更），请联系创建者重设提取码':
+    'The access code cannot be decrypted (ACCESS_CODE_KEY may have changed). Ask the creator to set a new one.',
+  '缺少 accessCode': 'Missing accessCode',
   '未命名': 'Untitled',
 
   /* ---------- services/archive.ts ---------- */

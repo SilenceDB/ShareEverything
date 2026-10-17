@@ -13,7 +13,15 @@ import type { FastifyInstance, FastifyRequest } from 'fastify'
 import { prisma } from '../db.js'
 import { config } from '../config.js'
 import { AppError, humanSize, normalizeRel, resolveInside } from '../utils/fs.js'
+import { assertMountVisible } from '../utils/mountAccess.js'
 import { FailureThrottle, safeEqual } from '../utils/guard.js'
+import {
+  AccessCodeCryptoError,
+  encryptAccessCode,
+  isEncryptedCode,
+  normalizeAccessCode,
+  readAccessCode,
+} from '../utils/accessCode.js'
 import { authGuard } from '../plugins/auth.js'
 import { streamFile } from '../utils/stream.js'
 import { createArchiveStream, planDirectory, type ZipMode } from '../utils/zip.js'
@@ -51,23 +59,46 @@ const accessCodeThrottle = new FailureThrottle(
   config.accessCodeWindowSeconds * 1000,
 )
 
-function dto(s: {
-  id: string
-  code: string
-  title: string | null
-  targetType: string
-  isDir: boolean
-  fileId: string | null
-  mountId: string | null
-  subPath: string
-  accessCode: string | null
-  expiresAt: Date | null
-  maxDownloads: number | null
-  downloadCount: number
-  createdAt: Date
-}) {
+/**
+ * 分享的对外表示。
+ *
+ * `accessCode` 字段只对**创建者自己**回显（revealCode），公开接口
+ * （`GET /api/s/:code` 等）一律不带 —— 那里只告诉前端「要不要填」，不能把答案送出去。
+ * 这不是权限判断，而是**同一个 dto 被两种视角复用**，所以由调用方显式声明视角。
+ */
+function dto(
+  s: {
+    id: string
+    code: string
+    title: string | null
+    targetType: string
+    isDir: boolean
+    fileId: string | null
+    mountId: string | null
+    subPath: string
+    accessCode: string | null
+    expiresAt: Date | null
+    maxDownloads: number | null
+    downloadCount: number
+    createdAt: Date
+  },
+  revealCode = false,
+) {
   const expired = s.expiresAt ? s.expiresAt.getTime() < Date.now() : false
   const exhausted = s.maxDownloads != null && s.downloadCount >= s.maxDownloads
+
+  // 解密失败只可能是「密钥换了」或「库被改过」。列表不能因为一条坏数据整体 500，
+  // 所以这里降级成「读不出来」，让用户自己看得见并重设；校验入口则会明确报错。
+  let plain: string | null = null
+  let broken = false
+  if (revealCode && s.accessCode) {
+    try {
+      plain = readAccessCode(s.accessCode)
+    } catch {
+      broken = true
+    }
+  }
+
   return {
     id: s.id,
     code: s.code,
@@ -77,6 +108,10 @@ function dto(s: {
     kind: s.isDir ? ('DIR' as const) : ('FILE' as const),
     subPath: s.subPath,
     hasAccessCode: !!s.accessCode,
+    /** 仅创建者视角有值（公开接口恒为 null） */
+    accessCode: plain,
+    /** 仅创建者视角有意义：这条分享的提取码解不开了，需要重设 */
+    accessCodeBroken: broken,
     expiresAt: s.expiresAt,
     maxDownloads: s.maxDownloads,
     downloadCount: s.downloadCount,
@@ -132,10 +167,12 @@ export async function shareRoutes(app: FastifyInstance) {
       if (!file || file.userId !== req.user.id) throw new AppError('文件不存在', 404)
       isDir = file.isDir
     } else {
-      // 磁盘发布是全站共享资源库，任何登录用户都能就其中的文件建分享，
-      // 不校验发布者是谁（否则共享就名不副实）
+      // 分享外链是另一条通道（自带提取码），但**看不见这一项的人不能拿它开链接**：
+      // 否则 private / protected 就只是把列表入口藏起来，拿到 id 照样能开一条外链出去。
+      // 不可见时回的是 404「发布不存在」，与「本来就没这一项」无法区分，不泄露存在性。
       const mount = await prisma.mount.findUnique({ where: { id: mountId ?? '' } })
       if (!mount) throw new AppError('发布不存在', 404)
+      await assertMountVisible(mount.id, req.user)
       // 逻辑文件夹只是资源库里的分组，没有对应的磁盘路径，因而无法打包/下载
       if (!mount.absPath) throw new AppError('逻辑文件夹暂不支持分享，请分享具体的目录或文件', 400)
       // 空字符串是合法的：表示分享整个发布根目录（DIR 节点）或该文件本身（FILE 节点）
@@ -146,6 +183,10 @@ export async function shareRoutes(app: FastifyInstance) {
       isDir = fs.statSync(abs).isDirectory()
     }
 
+    // 先校验再加密：老代码是 `body.accessCode || null`，一不校验二不加密，
+    // 库文件里能直接看见原文，短码还能被一眼看穿。
+    const accessCode = normalizeAccessCode(body.accessCode)
+
     const share = await prisma.share.create({
       data: {
         code: newCode(),
@@ -155,7 +196,8 @@ export async function shareRoutes(app: FastifyInstance) {
         mountId: targetType === 'MOUNT' ? mountId! : null,
         subPath: targetType === 'MOUNT' ? normalizeRel(subPath ?? '') : '',
         isDir,
-        accessCode: body.accessCode || null,
+        // 库里只存密文（AES-256-GCM，每条随机盐），明文只在这一刻存在于内存
+        accessCode: accessCode ? encryptAccessCode(accessCode) : null,
         expiresAt:
           body.expiresInHours && body.expiresInHours > 0
             ? new Date(Date.now() + body.expiresInHours * 3600_000)
@@ -164,7 +206,7 @@ export async function shareRoutes(app: FastifyInstance) {
         createdById: req.user.id,
       },
     })
-    return reply.code(201).send(dto(share))
+    return reply.code(201).send(dto(share, true))
   })
 
   /** 我创建的分享 */
@@ -173,7 +215,30 @@ export async function shareRoutes(app: FastifyInstance) {
       where: { createdById: req.user.id },
       orderBy: { createdAt: 'desc' },
     })
-    return list.map(dto)
+    // 自己的分享回显明文提取码：这是「反复查看」的落点，换成哈希就没这个能力了
+    return list.map((s) => dto(s, true))
+  })
+
+  /**
+   * 重设提取码（也用来改）。
+   *
+   * 需要的场景有三个：① 想换一个码；② 想给免码分享补一个码；③ 密钥换过之后
+   * 库里的码解不开了（列表里会标 `accessCodeBroken`），得有一条重设的出路，
+   * 否则只能删掉分享重建。传空字符串或 null 表示去掉提取码。
+   */
+  app.patch('/api/shares/:id', { onRequest: [authGuard] }, async (req) => {
+    const { id } = req.params as { id: string }
+    const body = (req.body ?? {}) as { accessCode?: string | null }
+    const share = await prisma.share.findUnique({ where: { id } })
+    if (!share || share.createdById !== req.user.id) throw new AppError('分享不存在', 404)
+    if (!('accessCode' in body)) throw new AppError('缺少 accessCode')
+
+    const code = normalizeAccessCode(body.accessCode)
+    const updated = await prisma.share.update({
+      where: { id },
+      data: { accessCode: code ? encryptAccessCode(code) : null },
+    })
+    return dto(updated, true)
   })
 
   app.delete('/api/shares/:id', { onRequest: [authGuard] }, async (req) => {
@@ -425,7 +490,7 @@ async function getVerifiedShare(
   }
   if (share.accessCode) {
     const throttleKey = `${req.ip}|${code}`
-    // 猜满就先拒绝，别让它继续拿 bcrypt 之外的廉价比较去撞
+    // 猜满就先拒绝，别让它继续拿廉价的比较去撞
     if (!accessCodeThrottle.allowed(throttleKey)) {
       const wait = accessCodeThrottle.retryAfter(throttleKey)
       throw new AppError(
@@ -434,12 +499,41 @@ async function getVerifiedShare(
         { key: '提取码错误次数过多，请 {} 秒后再试', params: [wait] },
       )
     }
+
+    // 库里是密文，先解出期望值。解不开说明密钥换了（或库被改过）——
+    // 这种情况不能当成「码错」：用户会一直重试猜一个永远猜不中的码，
+    // 还得让人知道该让创建者重设。
+    let expected: string
+    try {
+      expected = readAccessCode(share.accessCode) ?? ''
+    } catch (e) {
+      if (e instanceof AccessCodeCryptoError) {
+        throw new AppError(
+          '提取码无法解密（ACCESS_CODE_KEY 可能已变更），请联系创建者重设提取码',
+          500,
+        )
+      }
+      throw e
+    }
+
+    // 输入侧的放宽：粘贴时常带首尾空白，创建时已经 trim 过，这里对齐。
+    // 超长输入直接判错，避免把任意长度的字符串塞进比较函数。
+    const given = (accessCode ?? '').trim()
     // 定长比较：普通的 !== 在第一个不同的字符处就返回，理论上能被逐位试出来
-    if (!safeEqual(share.accessCode, accessCode ?? '')) {
+    if (given.length > 1024 || !safeEqual(expected, given)) {
       accessCodeThrottle.fail(throttleKey)
       throw new AppError('提取码不正确', 401)
     }
     accessCodeThrottle.reset(throttleKey)
+
+    // 懒迁移：升级前落库的是明文，这里第一次被**正确**访问时顺手加密回库。
+    // 只在成功后写 —— 否则别人拿失败尝试就能反复触发写库。写失败也不影响本次请求，
+    // 下次访问会再试一次，最坏情况一直是明文（读取端本来就兼容明文）。
+    if (!isEncryptedCode(share.accessCode)) {
+      void prisma.share
+        .update({ where: { id: share.id }, data: { accessCode: encryptAccessCode(expected) } })
+        .catch(() => {})
+    }
   }
 
   if (count) {
