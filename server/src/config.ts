@@ -11,6 +11,7 @@ import path from 'node:path'
 import fs from 'node:fs'
 import crypto from 'node:crypto'
 import dotenv from 'dotenv'
+import { dirPrefix } from './utils/fs.js'
 
 dotenv.config()
 
@@ -46,6 +47,21 @@ function realRootOrSame(p: string): string {
   }
 }
 
+/**
+ * 把白名单条目规范成绝对路径。
+ *
+ * 这里有个 Windows 特有的坑：**`D:` 是「盘符相对路径」**，含义是「D 盘上的当前工作目录」，
+ * 而不是盘根。`path.resolve('D:')` 于是返回**进程 cwd** —— 服务从 `D:\xxx\安装目录`
+ * 里启动、配置又写成 `MOUNT_ALLOWED_ROOTS=D:` 时，白名单会静默变成安装目录本身，
+ * 选择器只能浏览到那儿、再往上就是边界（表现为「父级进不去」）。
+ * 裸盘符一律补成 `D:\`；写成 `D:\`、`D:/`、`D:\\` 的本来就是盘根，不受影响。
+ */
+function normalizeRootSpec(raw: string): string {
+  const s = raw.trim()
+  if (process.platform === 'win32' && /^[A-Za-z]:$/.test(s)) return s + path.sep
+  return s
+}
+
 const rawMountRoots = (process.env.MOUNT_ALLOWED_ROOTS ?? '').trim()
 const mountRootsUnrestricted = rawMountRoots === '*'
 const mountAllowedRoots: string[] = mountRootsUnrestricted
@@ -55,7 +71,7 @@ const mountAllowedRoots: string[] = mountRootsUnrestricted
         .split(/[;|]/)
         .map((s) => s.trim())
         .filter(Boolean)
-        .map((s) => realRootOrSame(s))
+        .map((s) => realRootOrSame(normalizeRootSpec(s)))
     : [realRootOrSame(resolveDir('./Download'))]
 
 /**
@@ -282,7 +298,8 @@ function sameOrChild(root: string, target: string): boolean {
   const norm = (p: string) => (process.platform === 'win32' ? path.resolve(p).toLowerCase() : path.resolve(p))
   const r = norm(root)
   const t = norm(target)
-  return t === r || t.startsWith(r + path.sep)
+  // dirPrefix 负责「根已经是盘符（`D:\`）时不再多拼一个分隔符」
+  return t === r || t.startsWith(dirPrefix(r))
 }
 
 /**

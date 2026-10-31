@@ -123,6 +123,14 @@ export const en: Record<string, string> = {
   '这是一个文件节点，直接下载即可': 'This is a file node — download it directly',
   '逻辑文件夹不能直接下载': 'A logical folder cannot be downloaded directly',
   '缺少 sub 参数': 'Missing the "sub" parameter',
+  '「{}」不是你发布的，无法取消发布': '“{}” was not published by you, so you cannot unpublish it',
+  '部分发布项已不存在，请刷新后重试':
+    'Some of the selected items no longer exist. Please refresh and try again.',
+
+  /* ---------- utils/batch.ts ---------- */
+  '请先选择要操作的项目': 'Please select at least one item first',
+  '一次最多操作 {} 项，请分批进行':
+    'Up to {} items can be handled at once — please split them into batches',
 
   /* ---------- routes/shares.ts ---------- */
   'targetType 只能是 FILE 或 MOUNT': 'targetType must be either FILE or MOUNT',

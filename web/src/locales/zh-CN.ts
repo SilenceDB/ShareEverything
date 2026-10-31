@@ -54,7 +54,6 @@ export default {
     deleted: '已删除',
     download: '下载',
     share: '分享',
-    more: '更多',
     up: '上一级',
     parent: '返回上级',
     rootDir: '根目录',
@@ -69,6 +68,16 @@ export default {
     downloadDone: '下载完成',
     downloadFailed: '下载失败',
     requestFailed: '请求失败',
+    /** 列表页的搜索框 */
+    searchPlaceholder: '按名称搜索…',
+    searchEmpty: '没有找到包含「{q}」的项目',
+    searchMatches: '匹配 {n} / {total} 项',
+    /** 多选与批量操作 */
+    selectedCount: '已选 {n} 项',
+    clearSelection: '取消选择',
+    batchDelete: '删除选中',
+    batchDeleted: '已删除 {n} 项',
+    batchDeletePartial: '已删除 {n} 项，以下未能删除：{names}',
   },
 
   /* ---------------- 登录 / 注册 ---------------- */
@@ -111,6 +120,9 @@ export default {
     uploadedAt: '上传时间',
     empty: '这里还没有文件，点左上角上传',
     confirmDelete: '确定删除「{name}」？',
+    confirmBatchDelete: '确定删除选中的 {n} 项？删除后无法恢复。',
+    confirmBatchDeleteDirs:
+      '确定删除选中的 {n} 项？其中 {d} 个是目录，会连同里面的内容一起删除，且无法恢复。',
     mkdirDone: '已创建',
     uploadDone: '上传完成',
   },
@@ -131,9 +143,9 @@ export default {
     createRoleTip: '当前设置下只有管理员可以发布磁盘内容（服务端 MOUNT_CREATE_ROLE）',
     publishTip:
       '发布的是服务器本机已有的内容，原文件不移动、不复制；可见范围可设为所有人 / 仅自己 / 指定用户',
-    type: '类型',
     serverPath: '服务器路径',
     noDiskPath: '逻辑分组，无磁盘路径',
+    noDiskPathShort: '逻辑分组',
     publisher: '发布者',
     visibility: '可见范围',
     visibilityPublic: '所有人',
@@ -179,6 +191,9 @@ export default {
       '确定取消发布「{name}」？文件夹里的 {n} 个子项也会一起从资源库移除，磁盘上的原文件不受任何影响。',
     unpublished: '已取消发布',
     removed: '已移除 {n} 项',
+    batchUnpublish: '取消发布选中',
+    confirmBatchUnpublish:
+      '确定取消发布选中的 {n} 项？共有 {total} 个节点会从资源库移除（含文件夹里的子项），磁盘上的原文件不受任何影响。',
   },
 
   /* ---------------- 我的分享 ---------------- */

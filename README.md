@@ -356,6 +356,12 @@ MOUNT_CREATE_ROLE=ADMIN
 MOUNT_ALLOWED_ROOTS=D:\share;D:\movie
 ```
 
+⚠️ **想放行整块盘要写 `D:\`，不要写 `D:`**。Windows 下不带反斜杠的 `D:` 是「D 盘的**当前工作目录**」，
+不是盘根：`path.resolve('D:')` 得到的是**服务进程的启动目录**。所以配成 `MOUNT_ALLOWED_ROOTS=D:`
+时，白名单会变成安装目录本身 —— 选择器只能浏览到安装目录，再往上就是边界。
+现在服务会把裸盘符自动纠正成 `D:\`，并在启动日志里打印生效范围（`磁盘发布范围: D:\`），
+但配置里写全 `D:\` 最不会产生歧义。
+
 ### 硬盘不够用了，怎么平滑扩容
 
 磁盘发布能看到的范围就是 `MOUNT_ALLOWED_ROOTS`。想接第二块盘，按推荐程度有三种做法：
@@ -640,10 +646,12 @@ npm run check:i18n
 | POST   | `/api/files/mkdir`                   | 新建目录                              |
 | GET    | `/api/files/:id/download`            | 下载（支持 `?token=`）                  |
 | DELETE | `/api/files/:id`                     | 删除                                |
+| POST   | `/api/files/batch-delete`            | 批量删除（`ids`，≤200；部分失败在 `failed` 里回名称） |
 | GET    | `/api/mounts`                        | 资源库全部节点（扁平，含 `kind` / `parentId`，前端拼成树） |
 | POST   | `/api/mounts`                        | 新建节点（`kind` = FOLDER / DIR / FILE）  |
 | PATCH  | `/api/mounts/:id`                    | 重命名 / 移动（`parentId`）/ 可见范围（`visibility`、`grants`） |
 | DELETE | `/api/mounts/:id`                    | 移除节点（逻辑文件夹会连带其子项，只删记录）           |
+| POST   | `/api/mounts/batch-delete`           | 批量移除（`ids`，≤200；任一项无权则整体 403，`removed` 含子项） |
 | GET    | `/api/mounts/grantable-users`        | `PROTECTED` 授权名单可选用户（全部用户的 id / username / role） |
 | GET    | `/api/mounts/:id/browse?sub=`        | 浏览真实磁盘目录（仅 DIR 节点）                  |
 | GET    | `/api/mounts/:id/download?sub=`      | 下载（DIR 需 `sub`；FILE 节点可省略）          |

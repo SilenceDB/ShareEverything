@@ -23,6 +23,7 @@ import {
 } from '../utils/quota.js'
 import { authGuard } from '../plugins/auth.js'
 import { streamFile } from '../utils/stream.js'
+import { parseIdList } from '../utils/batch.js'
 
 export function dto(f: {
   id: string
@@ -46,6 +47,30 @@ export function dto(f: {
     createdAt: f.createdAt,
     updatedAt: f.updatedAt,
   }
+}
+
+/**
+ * 删除一条记录及其磁盘内容（目录会递归）。
+ *
+ * 单个删除和批量删除共用这一段，避免两边口径走偏 —— 曾经只想在批量里
+ * 「跳过不存在的项」，结果单个路由漏了 directory 的 deleteMany，
+ * 磁盘清空了却在库里留下整棵子树的孤儿记录。
+ */
+async function removeFileItem(
+  userId: string,
+  item: { id: string; relPath: string; isDir: boolean },
+) {
+  const root = userStorageDir(userId)
+  // force 让「文件已经不在了」变成无操作，批量里重复选中也能安全跑完
+  fs.rmSync(safeJoin(root, item.relPath), { recursive: true, force: true })
+
+  // 目录要连子项一起删
+  if (item.isDir) {
+    await prisma.fileItem.deleteMany({
+      where: { userId, relPath: { startsWith: item.relPath + '/' } },
+    })
+  }
+  await prisma.fileItem.delete({ where: { id: item.id } })
 }
 
 export async function fileRoutes(app: FastifyInstance) {
@@ -215,16 +240,45 @@ export async function fileRoutes(app: FastifyInstance) {
     const item = await prisma.fileItem.findUnique({ where: { id } })
     if (!item || item.userId !== req.user.id) throw new AppError('文件不存在', 404)
 
-    const root = userStorageDir(req.user.id)
-    fs.rmSync(safeJoin(root, item.relPath), { recursive: true, force: true })
-
-    // 目录要连子项一起删
-    if (item.isDir) {
-      await prisma.fileItem.deleteMany({
-        where: { userId: req.user.id, relPath: { startsWith: item.relPath + '/' } },
-      })
-    }
-    await prisma.fileItem.delete({ where: { id } })
+    await removeFileItem(req.user.id, item)
     return { ok: true }
+  })
+
+  /**
+   * 批量删除：文件库里勾选多条后一次删掉。
+   *
+   * 只处理属于当前用户的记录 —— 别人的 id 混进来既不删也不报错，
+   * 与单个删除一致（404 会泄露「这个 id 存在」）。
+   *
+   * 部分失败**不回滚**：目录下的某个文件被别的进程占住时，
+   * 回滚会把已经删掉的那些又留下记录，反而更难收拾。失败项单独回传名称，
+   * 让用户知道哪几个还在。
+   */
+  app.post('/api/files/batch-delete', { onRequest: [authGuard] }, async (req) => {
+    const body = (req.body ?? {}) as { ids?: unknown }
+    const ids = parseIdList(body.ids)
+
+    const items = await prisma.fileItem.findMany({
+      where: { id: { in: ids }, userId: req.user.id },
+    })
+    if (!items.length) throw new AppError('文件不存在', 404)
+
+    /**
+     * 先长后短：同时勾选了目录和它里面的文件时，子项先被删掉，
+     * 目录再递归清一次盘（force 幂等），不会因为「删目录时子项记录已消失」而报错。
+     */
+    const ordered = items.slice().sort((a, b) => b.relPath.length - a.relPath.length)
+
+    const failed: string[] = []
+    let removed = 0
+    for (const item of ordered) {
+      try {
+        await removeFileItem(req.user.id, item)
+        removed++
+      } catch {
+        failed.push(item.name)
+      }
+    }
+    return { ok: true, removed, failed }
   })
 }

@@ -8,9 +8,10 @@
 -->
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage, ElMessageBox, type TableInstance } from 'element-plus'
+import { Search } from '@element-plus/icons-vue'
 import { api, type FileItem } from '../api'
 import { useUserStore } from '../stores/user'
 import ShareDialog from '../components/ShareDialog.vue'
@@ -63,6 +64,42 @@ function upsertTransfer(s: TransferSnapshot) {
   else transfers.value.push(s)
 }
 
+/* ---------------- 搜索 ----------------
+ * 目录是一次性整列返回的（没有分页），所以在前端过滤就够，
+ * 不必为了一次「找文件」再打一个后端请求。
+ */
+const search = ref('')
+const keyword = computed(() => search.value.trim().toLowerCase())
+
+const filteredItems = computed(() => {
+  const k = keyword.value
+  if (!k) return items.value
+  return items.value.filter((it) => it.name.toLowerCase().includes(k))
+})
+
+/* ---------------- 多选与批量删除 ---------------- */
+
+const tableRef = ref<TableInstance>()
+const selected = ref<FileItem[]>([])
+
+function onSelectionChange(rows: FileItem[]) {
+  selected.value = rows
+}
+
+/**
+ * 清空选中。
+ *
+ * 列表数据一变（换目录、刷新、搜索过滤）就必须清一次：表格内部会记住被选中的
+ * row 对象，而这些对象可能已经不在当前 data 里了 —— 那个状态下点「删除选中」
+ * 删掉的是界面上看不见的项，属于最难排查的一类误操作。
+ */
+function resetSelection() {
+  selected.value = []
+  tableRef.value?.clearSelection()
+}
+
+watch(keyword, () => resetSelection())
+
 async function load() {
   loading.value = true
   try {
@@ -73,6 +110,9 @@ async function load() {
     ElMessage.error(e.message)
   } finally {
     loading.value = false
+    // 数据换了，选中的 row 对象也跟着失效，等表格渲染完再清
+    await nextTick()
+    resetSelection()
   }
 }
 
@@ -150,6 +190,38 @@ async function remove(row: FileItem) {
   }
 }
 
+/** 批量删除：勾选多条后一次删完，目录连同里面的内容一起删 */
+async function removeSelected() {
+  const rows = selected.value
+  if (!rows.length) return
+
+  const dirCount = rows.filter((r) => r.isDir).length
+  const message = dirCount
+    ? t('files.confirmBatchDeleteDirs', { n: rows.length, d: dirCount })
+    : t('files.confirmBatchDelete', { n: rows.length })
+  try {
+    await ElMessageBox.confirm(message, t('common.alertTitle'), { type: 'warning' })
+  } catch {
+    return
+  }
+
+  try {
+    const res = await api.files.batchRemove(rows.map((r) => r.id))
+    if (res.failed.length) {
+      // 名称太多会把提示条撑爆，只报前三个，后面用省略号带过
+      const names =
+        res.failed.slice(0, 3).join('、') + (res.failed.length > 3 ? '…' : '')
+      ElMessage.warning(t('common.batchDeletePartial', { n: res.removed, names }))
+    } else {
+      // 这条文案在英文里是复数形式，第二个参数必须直接传数字才会选对分支
+      ElMessage.success(t('common.batchDeleted', res.removed))
+    }
+    await load()
+  } catch (e: any) {
+    ElMessage.error(e.message)
+  }
+}
+
 function openShare(row: FileItem) {
   shareTarget.value = { targetType: 'FILE', fileId: row.id }
   shareTitle.value = row.name
@@ -181,6 +253,16 @@ onMounted(load)
       </el-tooltip>
       <el-button @click="mkdirVisible = true">{{ t('files.newFolder') }}</el-button>
       <el-button @click="load">{{ t('common.refresh') }}</el-button>
+      <el-input
+        v-model="search"
+        class="search"
+        :placeholder="t('common.searchPlaceholder')"
+        clearable
+      >
+        <template #prefix>
+          <el-icon><Search /></el-icon>
+        </template>
+      </el-input>
       <el-tooltip :content="policyDesc" placement="bottom">
         <el-select v-model="policyName" size="default" class="policy" @change="changePolicy">
           <el-option
@@ -196,16 +278,38 @@ onMounted(load)
       </span>
     </div>
 
-    <el-breadcrumb separator="/" class="crumb">
-      <el-breadcrumb-item>
-        <a @click="goRoot">{{ t('common.rootDir') }}</a>
-      </el-breadcrumb-item>
-      <el-breadcrumb-item v-for="(c, i) in crumbs" :key="i">
-        <a @click="goCrumb(i)">{{ c }}</a>
-      </el-breadcrumb-item>
-    </el-breadcrumb>
+    <div class="crumb-row">
+      <el-breadcrumb separator="/" class="crumb">
+        <el-breadcrumb-item>
+          <a @click="goRoot">{{ t('common.rootDir') }}</a>
+        </el-breadcrumb-item>
+        <el-breadcrumb-item v-for="(c, i) in crumbs" :key="i">
+          <a @click="goCrumb(i)">{{ c }}</a>
+        </el-breadcrumb-item>
+      </el-breadcrumb>
+      <span v-if="keyword" class="match-tip">
+        {{ t('common.searchMatches', { n: filteredItems.length, total: items.length }) }}
+      </span>
+    </div>
 
-    <el-table v-loading="loading" :data="items" style="width: 100%">
+    <div v-if="selected.length" class="bulk-bar">
+      <span class="bulk-count">{{ t('common.selectedCount', { n: selected.length }) }}</span>
+      <el-button size="small" type="danger" @click="removeSelected">
+        {{ t('common.batchDelete') }}
+      </el-button>
+      <el-button size="small" @click="resetSelection">
+        {{ t('common.clearSelection') }}
+      </el-button>
+    </div>
+
+    <el-table
+      ref="tableRef"
+      v-loading="loading"
+      :data="filteredItems"
+      style="width: 100%"
+      @selection-change="onSelectionChange"
+    >
+      <el-table-column type="selection" width="46" />
       <el-table-column :label="t('common.name')" min-width="220">
         <template #default="{ row }">
           <el-link v-if="row.isDir" type="primary" @click="enterDir(row)">{{ row.name }}</el-link>
@@ -230,7 +334,12 @@ onMounted(load)
         </template>
       </el-table-column>
       <template #empty>
-        <el-empty :description="t('files.empty')" />
+        <!-- 搜索时不能沿用「这里还没有文件」，否则会让人以为目录被清空了 -->
+        <el-empty
+          :description="
+            keyword ? t('common.searchEmpty', { q: search.trim() }) : t('files.empty')
+          "
+        />
       </template>
     </el-table>
   </div>
@@ -257,6 +366,11 @@ onMounted(load)
   align-items: center;
   gap: 10px;
   margin-bottom: 14px;
+  /* 窄屏下搜索框会把整行挤出去，宁可折行也不出现横向滚动 */
+  flex-wrap: wrap;
+}
+.search {
+  width: 200px;
 }
 .policy {
   /* 宽度按较长的英文标签（"Upload mode: Balanced"）留够，中文下多出的空白无妨 */
@@ -267,10 +381,36 @@ onMounted(load)
   font-size: 13px;
   color: #909399;
 }
-.crumb {
+.crumb-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   margin-bottom: 12px;
+}
+.crumb {
+  margin-bottom: 0;
 }
 .crumb a {
   cursor: pointer;
+}
+.match-tip {
+  margin-left: auto;
+  font-size: 12px;
+  color: #909399;
+}
+/* 多选后出现的操作条：贴着表格，避免和顶部工具栏抢注意力 */
+.bulk-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+  padding: 6px 10px;
+  border: 1px solid var(--el-color-danger-light-7);
+  border-radius: 4px;
+  background: var(--el-color-danger-light-9);
+}
+.bulk-count {
+  font-size: 13px;
+  color: var(--el-color-danger);
 }
 </style>

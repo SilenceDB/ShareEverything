@@ -53,7 +53,6 @@ export default {
     deleted: 'Deleted',
     download: 'Download',
     share: 'Share',
-    more: 'More',
     up: 'Up',
     parent: 'Up one level',
     rootDir: 'Root',
@@ -68,6 +67,16 @@ export default {
     downloadDone: 'Download complete',
     downloadFailed: 'Download failed',
     requestFailed: 'Request failed',
+    /** Search box on list pages */
+    searchPlaceholder: 'Search by name…',
+    searchEmpty: 'No items matching “{q}”',
+    searchMatches: '{n} / {total} matched',
+    /** Multi-select and batch actions */
+    selectedCount: '{n} selected',
+    clearSelection: 'Clear selection',
+    batchDelete: 'Delete selected',
+    batchDeleted: 'no items deleted | {n} item deleted | {n} items deleted',
+    batchDeletePartial: 'Deleted {n}; these could not be removed: {names}',
   },
 
   /* ---------------- 登录 / 注册 ---------------- */
@@ -111,6 +120,9 @@ export default {
     uploadedAt: 'Uploaded',
     empty: 'No files here yet — use the upload button at the top left',
     confirmDelete: 'Delete “{name}”?',
+    confirmBatchDelete: 'Delete the {n} selected items? This cannot be undone.',
+    confirmBatchDeleteDirs:
+      'Delete the {n} selected items? {d} of them are folders and will be removed along with everything inside. This cannot be undone.',
     mkdirDone: 'Created',
     uploadDone: 'Upload complete',
   },
@@ -132,10 +144,10 @@ export default {
       'With the current settings only administrators can publish disk content (server-side MOUNT_CREATE_ROLE)',
     publishTip:
       'Publishing links to content already on the server — nothing is moved or copied. Visibility can be set to everyone / only me / selected users',
-    type: 'Type',
     serverPath: 'Server path',
     noDiskPath: 'Logical group, no disk path',
-    publisher: 'Published by',
+    noDiskPathShort: 'Logical group',
+    publisher: 'Owner',
     visibility: 'Visibility',
     visibilityPublic: 'Everyone',
     visibilityPrivate: 'Only me',
@@ -180,6 +192,9 @@ export default {
       'Unpublish “{name}”? The sub-items inside it ({n}) will also be removed from the library. The original files on disk are not affected.',
     unpublished: 'Unpublished',
     removed: 'nothing removed | {n} item removed | {n} items removed',
+    batchUnpublish: 'Unpublish selected',
+    confirmBatchUnpublish:
+      'Unpublish the {n} selected items? {total} nodes will be removed from the library (including nested items). The original files on disk are not affected.',
   },
 
   /* ---------------- 我的分享 ---------------- */

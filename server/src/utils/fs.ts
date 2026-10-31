@@ -48,6 +48,17 @@ function cmp(p: string): string {
   return process.platform === 'win32' ? p.toLowerCase() : p
 }
 
+/**
+ * 「目录前缀」：用于判断 target 是否在 root 之内。
+ *
+ * 必须处理 root 自身已带分隔符的情况 —— 盘符根是 `D:\`，直接拼一个就变成 `D:\\`，
+ * 于是 `D:\foo` 永远比不上、判定为越界。发布整个盘（`MOUNT_ALLOWED_ROOTS=D:\`）时
+ * 会踩到这一条，表现为「选得到但一发布就 403」。
+ */
+export function dirPrefix(p: string): string {
+  return p.endsWith(path.sep) ? p : p + path.sep
+}
+
 /** 单段名称的最大字节数（UTF-8）；主流文件系统都以 255 字节为上限 */
 const MAX_NAME_BYTES = 255
 
@@ -103,7 +114,7 @@ export function assertSafeName(raw: unknown): string {
 export function safeJoin(root: string, rel: string): string {
   const rootAbs = path.resolve(root)
   const abs = path.resolve(rootAbs, normalizeRel(rel))
-  if (abs !== rootAbs && !abs.startsWith(rootAbs + path.sep)) {
+  if (abs !== rootAbs && !abs.startsWith(dirPrefix(rootAbs))) {
     throw new AppError('非法路径：不允许访问根目录之外的位置', 403)
   }
   return abs
@@ -112,7 +123,7 @@ export function safeJoin(root: string, rel: string): string {
 export function assertInside(root: string, abs: string): void {
   const rootAbs = path.resolve(root)
   const target = path.resolve(abs)
-  if (cmp(target) !== cmp(rootAbs) && !cmp(target).startsWith(cmp(rootAbs) + path.sep)) {
+  if (cmp(target) !== cmp(rootAbs) && !cmp(target).startsWith(dirPrefix(cmp(rootAbs)))) {
     throw new AppError('非法路径：不允许访问根目录之外的位置', 403)
   }
 }

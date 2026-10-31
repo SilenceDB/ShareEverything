@@ -390,6 +390,13 @@ try {
   console.log(`ShareEverything 已启动: http://localhost:${config.port}  (pid ${process.pid})`)
   console.log(`版本: ${versionLabel()}`)
   console.log(`文件存储根目录: ${config.storageRoot}`)
+  // 把「实际生效」的白名单打出来：`D:` 这类写法过去会被悄悄解析成进程 cwd，
+  // 结果就是选择器只能浏览到安装目录、父级进不去，光看 .env 完全看不出问题。
+  console.log(
+    `磁盘发布范围: ${
+      config.mountRootsUnrestricted ? '不限制（任何已登录用户都能发布任意目录）' : config.mountAllowedRoots.join(' ; ')
+    }`,
+  )
   console.log(`运行日志: ${currentLogFile()}`)
   if (webDist) console.log(`前端静态资源: ${webDist}`)
 } catch (err) {

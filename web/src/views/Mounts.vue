@@ -8,9 +8,10 @@
 -->
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage, ElMessageBox, type TableInstance } from 'element-plus'
+import { Download, MoreFilled, Search, Share } from '@element-plus/icons-vue'
 import {
   api,
   type DiskEntry,
@@ -63,6 +64,45 @@ const rows = computed(() => {
   return list
     .slice()
     .sort((a, b) => (rank(a) === rank(b) ? a.name.localeCompare(b.name) : rank(a) - rank(b)))
+})
+
+/* ---------------- 搜索 ----------------
+ * 只在**当前这一层**过滤，不跨层级：左侧有树、上面有面包屑，
+ * 用户点进某个文件夹就是在「这个文件夹里找东西」，跨层结果反而要额外一列路径才说得清。
+ */
+const search = ref('')
+const keyword = computed(() => search.value.trim().toLowerCase())
+
+const filteredRows = computed(() => {
+  const k = keyword.value
+  if (!k) return rows.value
+  return rows.value.filter((m) => m.name.toLowerCase().includes(k))
+})
+
+/* ---------------- 多选与批量取消发布 ---------------- */
+
+const tableRef = ref<TableInstance>()
+const selected = ref<MountItem[]>([])
+
+/** 只有发布者本人或管理员能取消发布，别人的项干脆不给勾 */
+function selectable(row: MountItem) {
+  return row.canManage
+}
+
+function onSelectionChange(rows: MountItem[]) {
+  selected.value = rows
+}
+
+function resetSelection() {
+  selected.value = []
+  tableRef.value?.clearSelection()
+}
+
+// 换文件夹、刷新、过滤都会换掉行对象；选中的 row 一旦不在当前 data 里，
+// 再点「取消发布」删的就是界面上看不见的项，所以这三处一律清空
+watch([selectedId, keyword], async () => {
+  await nextTick()
+  resetSelection()
 })
 
 /** 面包屑：从根走到当前文件夹 */
@@ -163,6 +203,9 @@ async function load() {
     ElMessage.error(e.message)
   } finally {
     loading.value = false
+    // 列表换了对象，之前勾选的 row 已经不在表格里了
+    await nextTick()
+    resetSelection()
   }
 }
 
@@ -319,8 +362,37 @@ async function remove(row: MountItem) {
   }
 }
 
-/* ---------------- 调整可见范围 ---------------- */
+/** 批量取消发布：勾选的多项一次移除，文件夹连同子项算一个整体 */
+async function removeSelected() {
+  const picked = selected.value
+  if (!picked.length) return
 
+  // 选中项之间可能有父子关系，用集合去重才报得准「实际会消失多少个节点」
+  const total = new Set<string>()
+  for (const r of picked) {
+    total.add(r.id)
+    if (r.kind === 'FOLDER') for (const id of descendantIds(r.id)) total.add(id)
+  }
+
+  try {
+    await ElMessageBox.confirm(
+      t('mounts.confirmBatchUnpublish', { n: picked.length, total: total.size }),
+      t('common.alertTitle'),
+      { type: 'warning' },
+    )
+  } catch {
+    return
+  }
+  try {
+    const res = await api.mounts.batchRemove(picked.map((r) => r.id))
+    ElMessage.success(t('mounts.removed', res.removed))
+    await load()
+  } catch (e: any) {
+    ElMessage.error(e.message)
+  }
+}
+
+/* ---------------- 调整可见范围 ---------------- */
 const visVisible = ref(false)
 const visTarget = ref<MountItem | null>(null)
 const visValue = ref<MountVisibility>('PUBLIC')
@@ -410,6 +482,40 @@ function openShare(row: MountItem | DiskEntry) {
   shareVisible.value = true
 }
 
+/* ---------------- 表格自适应 ----------------
+ * 6 列全摆在窄容器里必然出横向滚动条。这里按容器实际宽度**逐级收敛**：
+ *   宽 → 名称 / 路径 / 发布者 / 可见性 / 操作
+ *   中 → 先收起「发布者」（管理员视角才用得上）
+ *   窄 → 再收起「磁盘路径」
+ * 阈值取各档列宽之和，收一档就刚好腾出空间，不会出现「收完了还在滚」。
+ */
+const tableWrap = ref<HTMLElement | null>(null)
+const wrapWidth = ref(0)
+/**
+ * 全列所需最小宽度：44（多选）+ 200（名称）+ 110（路径）+ 72（发布者）+ 104（可见性）+ 200（操作）= 730。
+ * 操作列按英文最长标签（"Download"）留够，再缩就会换行。
+ */
+const W_FULL = 730
+/** 收起「发布者」后的最小宽度：730 − 72 = 658 */
+const W_NO_OWNER = 658
+const showOwner = computed(() => wrapWidth.value === 0 || wrapWidth.value >= W_FULL)
+const showPath = computed(() => wrapWidth.value === 0 || wrapWidth.value >= W_NO_OWNER)
+
+let resizeObserver: ResizeObserver | null = null
+onMounted(() => {
+  if (tableWrap.value && typeof ResizeObserver !== 'undefined') {
+    resizeObserver = new ResizeObserver((entries) => {
+      const w = entries[0]?.contentRect.width ?? 0
+      if (w > 0) wrapWidth.value = w
+    })
+    resizeObserver.observe(tableWrap.value)
+  }
+})
+onBeforeUnmount(() => {
+  resizeObserver?.disconnect()
+  resizeObserver = null
+})
+
 onMounted(async () => {
   await store.loadMe()
   await load()
@@ -437,11 +543,21 @@ onMounted(async () => {
         </span>
       </el-tooltip>
       <el-button @click="load">{{ t('common.refresh') }}</el-button>
+      <el-input
+        v-model="search"
+        class="search"
+        :placeholder="t('common.searchPlaceholder')"
+        clearable
+      >
+        <template #prefix>
+          <el-icon><Search /></el-icon>
+        </template>
+      </el-input>
       <span class="tip">{{ t('mounts.publishTip') }}</span>
     </div>
 
     <div class="body">
-      <el-aside class="side" width="240px">
+      <el-aside class="side" width="220px">
         <el-tree
           :data="treeData"
           node-key="id"
@@ -455,97 +571,138 @@ onMounted(async () => {
       </el-aside>
 
       <div class="main">
-        <el-breadcrumb separator="/" class="crumbs">
-          <el-breadcrumb-item v-for="(c, i) in breadcrumb" :key="c.id">
-            <el-link v-if="i < breadcrumb.length - 1" type="primary" @click="selectedId = c.id">
-              {{ c.name }}
-            </el-link>
-            <span v-else>{{ c.name }}</span>
-          </el-breadcrumb-item>
-        </el-breadcrumb>
-
-        <el-table :data="rows" style="width: 100%">
-          <el-table-column :label="t('common.name')" min-width="220">
-            <template #default="{ row }">
-              <el-icon class="row-icon" :class="row.kind.toLowerCase()">
-                <FolderOpened v-if="row.kind === 'FOLDER'" />
-                <Folder v-else-if="row.kind === 'DIR'" />
-                <Document v-else />
-              </el-icon>
-              <el-link v-if="row.kind !== 'FILE'" type="primary" @click="openRow(row)">
-                {{ row.name }}
+        <div class="crumbs-row">
+          <el-breadcrumb separator="/" class="crumbs">
+            <el-breadcrumb-item v-for="(c, i) in breadcrumb" :key="c.id">
+              <el-link v-if="i < breadcrumb.length - 1" type="primary" @click="selectedId = c.id">
+                {{ c.name }}
               </el-link>
-              <span v-else>{{ row.name }}</span>
+              <span v-else>{{ c.name }}</span>
+            </el-breadcrumb-item>
+          </el-breadcrumb>
+          <span v-if="keyword" class="match-tip">
+            {{ t('common.searchMatches', { n: filteredRows.length, total: rows.length }) }}
+          </span>
+        </div>
+
+        <div v-if="selected.length" class="bulk-bar">
+          <span class="bulk-count">{{ t('common.selectedCount', { n: selected.length }) }}</span>
+          <el-button size="small" type="danger" @click="removeSelected">
+            {{ t('mounts.batchUnpublish') }}
+          </el-button>
+          <el-button size="small" @click="resetSelection">
+            {{ t('common.clearSelection') }}
+          </el-button>
+        </div>
+
+        <div ref="tableWrap" class="table-wrap">
+          <el-table
+            ref="tableRef"
+            :data="filteredRows"
+            style="width: 100%"
+            @selection-change="onSelectionChange"
+          >
+            <el-table-column type="selection" width="44" :selectable="selectable" />
+            <el-table-column :label="t('common.name')" min-width="200">
+              <template #default="{ row }">
+                <div class="name-cell">
+                  <el-icon class="row-icon" :class="row.kind.toLowerCase()">
+                    <FolderOpened v-if="row.kind === 'FOLDER'" />
+                    <Folder v-else-if="row.kind === 'DIR'" />
+                    <Document v-else />
+                  </el-icon>
+                  <a
+                    v-if="row.kind !== 'FILE'"
+                    class="name-text name-link"
+                    :title="row.name"
+                    @click="openRow(row)"
+                  >
+                    {{ row.name }}
+                  </a>
+                  <span v-else class="name-text" :title="row.name">{{ row.name }}</span>
+                  <el-tag size="small" :type="KIND_TAG[row.kind as MountKind]" class="kind-tag">
+                    {{ kindLabel[row.kind as MountKind] }}
+                  </el-tag>
+                </div>
+              </template>
+            </el-table-column>
+            <el-table-column v-if="showPath" :label="t('mounts.serverPath')" min-width="110">
+              <template #default="{ row }">
+                <span v-if="row.absPath" class="mono path-text" :title="row.absPath">
+                  {{ row.absPath }}
+                </span>
+                <span v-else class="muted" :title="t('mounts.noDiskPath')">
+                  {{ t('mounts.noDiskPathShort') }}
+                </span>
+              </template>
+            </el-table-column>
+            <el-table-column v-if="showOwner" :label="t('mounts.publisher')" width="72">
+              <template #default="{ row }">
+                <!-- 这一列只有 72px，用 tag 的话内边距就把两个字吃掉了，索性纯文本 + 悬浮看全名 -->
+                <span v-if="row.ownerName" class="owner-text" :title="row.ownerName">
+                  {{ row.ownerName }}
+                </span>
+              </template>
+            </el-table-column>
+            <el-table-column :label="t('mounts.visibility')" width="104">
+              <template #default="{ row }">
+                <el-tag size="small" :type="VIS_TAG[row.visibility as MountVisibility]">
+                  {{ visibilityLabel[row.visibility as MountVisibility] }}
+                </el-tag>
+                <el-tag v-if="row.granted" size="small" type="warning">
+                  {{ t('mounts.sharedWithMe') }}
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column :label="t('common.actions')" width="200" align="right">
+              <template #default="{ row }">
+                <div class="ops">
+                  <el-button size="small" type="primary" @click="openRow(row)">
+                    {{
+                      row.kind === 'FOLDER'
+                        ? t('mounts.open')
+                        : row.kind === 'DIR'
+                          ? t('mounts.browse')
+                          : t('common.download')
+                    }}
+                  </el-button>
+                  <el-tooltip v-if="row.kind === 'DIR'" :content="t('common.download')" placement="top">
+                    <el-button size="small" :icon="Download" @click="download(row)" />
+                  </el-tooltip>
+                  <el-tooltip
+                    v-if="row.kind !== 'FOLDER'"
+                    :content="t('common.share')"
+                    placement="top"
+                  >
+                    <el-button size="small" :icon="Share" @click="openShare(row)" />
+                  </el-tooltip>
+                  <el-dropdown v-if="row.canManage" trigger="click">
+                    <el-button size="small" :icon="MoreFilled" />
+                    <template #dropdown>
+                      <el-dropdown-menu>
+                        <el-dropdown-item @click="rename(row)">{{ t('mounts.rename') }}</el-dropdown-item>
+                        <el-dropdown-item @click="openMove(row)">{{ t('mounts.moveTo') }}</el-dropdown-item>
+                        <el-dropdown-item @click="openVisibility(row)">
+                          {{ t('mounts.changeVisibility') }}
+                        </el-dropdown-item>
+                        <el-dropdown-item divided @click="remove(row)">
+                          {{ t('mounts.unpublish') }}
+                        </el-dropdown-item>
+                      </el-dropdown-menu>
+                    </template>
+                  </el-dropdown>
+                </div>
+              </template>
+            </el-table-column>
+            <template #empty>
+              <el-empty
+                :description="
+                  keyword ? t('common.searchEmpty', { q: search.trim() }) : t('mounts.empty')
+                "
+              />
             </template>
-          </el-table-column>
-          <el-table-column :label="t('mounts.type')" width="90">
-            <template #default="{ row }">
-              <el-tag size="small" :type="KIND_TAG[row.kind as MountKind]">
-                {{ kindLabel[row.kind as MountKind] }}
-              </el-tag>
-            </template>
-          </el-table-column>
-          <el-table-column :label="t('mounts.serverPath')" min-width="240">
-            <template #default="{ row }">
-              <span v-if="row.absPath" class="mono">{{ row.absPath }}</span>
-              <span v-else class="muted">{{ t('mounts.noDiskPath') }}</span>
-            </template>
-          </el-table-column>
-          <el-table-column :label="t('mounts.publisher')" width="100">
-            <template #default="{ row }">
-              <el-tag v-if="row.ownerName" size="small" type="info">{{ row.ownerName }}</el-tag>
-            </template>
-          </el-table-column>
-          <el-table-column :label="t('mounts.visibility')" width="150">
-            <template #default="{ row }">
-              <el-tag size="small" :type="VIS_TAG[row.visibility as MountVisibility]">
-                {{ visibilityLabel[row.visibility as MountVisibility] }}
-              </el-tag>
-              <el-tag v-if="row.granted" size="small" type="warning">
-                {{ t('mounts.sharedWithMe') }}
-              </el-tag>
-            </template>
-          </el-table-column>
-          <el-table-column :label="t('common.actions')" width="320">
-            <template #default="{ row }">
-              <el-button size="small" type="primary" @click="openRow(row)">
-                {{
-                  row.kind === 'FOLDER'
-                    ? t('mounts.open')
-                    : row.kind === 'DIR'
-                      ? t('mounts.browse')
-                      : t('common.download')
-                }}
-              </el-button>
-              <el-button v-if="row.kind !== 'FOLDER'" size="small" @click="download(row)">
-                {{ t('common.download') }}
-              </el-button>
-              <el-button v-if="row.kind !== 'FOLDER'" size="small" @click="openShare(row)">
-                {{ t('common.share') }}
-              </el-button>
-              <el-dropdown v-if="row.canManage" trigger="click">
-                <el-button size="small">
-                  {{ t('common.more') }}<el-icon><ArrowDown /></el-icon>
-                </el-button>
-                <template #dropdown>
-                  <el-dropdown-menu>
-                    <el-dropdown-item @click="rename(row)">{{ t('mounts.rename') }}</el-dropdown-item>
-                    <el-dropdown-item @click="openMove(row)">{{ t('mounts.moveTo') }}</el-dropdown-item>
-                    <el-dropdown-item @click="openVisibility(row)">
-                      {{ t('mounts.changeVisibility') }}
-                    </el-dropdown-item>
-                    <el-dropdown-item divided @click="remove(row)">
-                      {{ t('mounts.unpublish') }}
-                    </el-dropdown-item>
-                  </el-dropdown-menu>
-                </template>
-              </el-dropdown>
-            </template>
-          </el-table-column>
-          <template #empty>
-            <el-empty :description="t('mounts.empty')" />
-          </template>
-        </el-table>
+          </el-table>
+        </div>
       </div>
     </div>
   </div>
@@ -754,9 +911,98 @@ onMounted(async () => {
   flex: 1;
   min-width: 0;
 }
+/* 表格容器：宽度由父级决定，ResizeObserver 据此决定收哪几列 */
+.table-wrap {
+  width: 100%;
+  min-width: 0;
+}
+.name-cell {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+/* 名称超长时省略，完整值走 title 悬浮提示，不再把表格撑宽。
+   这里用普通 <a> 而不是 el-link：el-link 内部 .el-link__inner 是 inline-flex，
+   溢出的内容不会被 text-overflow 处理，截断处不会出现省略号。 */
+.name-text {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.name-link {
+  color: var(--el-color-primary);
+  cursor: pointer;
+  text-decoration: none;
+}
+.name-link:hover {
+  text-decoration: underline;
+}
+.kind-tag {
+  flex: none;
+}
+.path-text {
+  display: block;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+/* 发布者列只有 72px，纯文本 + 省略号，完整名字挂在 title 上 */
+.owner-text {
+  display: block;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 13px;
+  color: #606266;
+}
+.ops {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+.ops .el-button {
+  margin-left: 0;
+}
 .crumbs {
   margin-bottom: 10px;
   font-size: 13px;
+}
+/* 面包屑右侧挂「匹配 N / M」，两者同一行时面包屑自己不再留底部间距 */
+.crumbs-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.crumbs-row .crumbs {
+  margin-bottom: 0;
+}
+.match-tip {
+  margin-left: auto;
+  font-size: 12px;
+  color: #909399;
+}
+/* 多选后出现：贴着表格，说明「接下来这批操作作用在谁身上」 */
+.bulk-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+  padding: 6px 10px;
+  border: 1px solid var(--el-color-danger-light-7);
+  border-radius: 4px;
+  background: var(--el-color-danger-light-9);
+}
+.bulk-count {
+  font-size: 13px;
+  color: var(--el-color-danger);
+}
+.search {
+  width: 180px;
 }
 .browse-nav {
   display: flex;

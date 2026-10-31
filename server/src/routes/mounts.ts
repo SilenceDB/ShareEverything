@@ -21,6 +21,7 @@ import {
 } from '../utils/mountAccess.js'
 import { authGuard } from '../plugins/auth.js'
 import { streamFile } from '../utils/stream.js'
+import { parseIdList } from '../utils/batch.js'
 
 const SKIP_NAMES = new Set(['$RECYCLE.BIN', 'System Volume Information', '.DS_Store'])
 const KINDS = new Set(['FOLDER', 'DIR', 'FILE'])
@@ -154,9 +155,9 @@ async function assertNoDirOverlap(target: string) {
   }
 }
 
-/** 取某个节点及其全部后代的 id（父在前、子在后） */
-async function collectSubtree(rootId: string): Promise<string[]> {
-  const all = await prisma.mount.findMany({ select: { id: true, parentId: true } })
+/** 取某个节点及其全部后代的 id（父在前、子在后）。
+ *  `all` 可以复用已经查过的扁平表 —— 批量删除时每个 id 都查一遍全表是平方级开销。 */
+function subtreeOf(all: { id: string; parentId: string | null }[], rootId: string): string[] {
   const byParent = new Map<string, string[]>()
   for (const n of all) {
     const key = n.parentId ?? ''
@@ -172,6 +173,23 @@ async function collectSubtree(rootId: string): Promise<string[]> {
     for (const child of byParent.get(id) ?? []) stack.push(child)
   }
   return out
+}
+
+async function collectSubtree(rootId: string): Promise<string[]> {
+  const all = await prisma.mount.findMany({ select: { id: true, parentId: true } })
+  return subtreeOf(all, rootId)
+}
+
+/** 节点到根的深度，用于批量删除时「自底向上」排序 */
+function depthOf(all: ReadonlyMap<string, { parentId: string | null }>, id: string): number {
+  let depth = 0
+  let cur = all.get(id)
+  // 防御性上限：正常树不会这么深，真有环也不会把服务卡死在这里
+  while (cur?.parentId && depth < 1000) {
+    depth++
+    cur = all.get(cur.parentId)
+  }
+  return depth
 }
 
 /* ---------------- 选择器：服务端磁盘浏览 ---------------- */
@@ -386,6 +404,49 @@ export async function mountRoutes(app: FastifyInstance) {
     // 自关联用的是 NoAction，数据库不会替我们级联，必须自底向上逐个删
     await prisma.$transaction(ids.slice().reverse().map((x) => prisma.mount.delete({ where: { id: x } })))
     return { ok: true, removed: ids.length }
+  })
+
+  /**
+   * 批量取消发布：资源库里勾选多项一次移除。
+   *
+   * 三条规则：
+   *
+   * 1. **整体拒绝而非部分成功**。混进一项别人的发布就整个请求 403 ——
+   *    前端只允许勾选 `canManage` 的项，真出现这种情况说明列表已经过期，
+   *    此时按「删掉能删的、留下一半」处理，用户看到的和实际发生的对不上。
+   * 2. **子树合并去重**。同时勾选文件夹和它里面的项时，只按一次算；
+   *    返回的 removed 是**实际消失的节点总数**，与单个删除的口径一致。
+   * 3. **自底向上删**。父子之间是 NoAction，数据库不级联，
+   *    先删子再删父才不会被外键拦住。
+   */
+  app.post('/api/mounts/batch-delete', { onRequest: [authGuard] }, async (req) => {
+    const body = (req.body ?? {}) as { ids?: unknown }
+    const ids = parseIdList(body.ids)
+
+    const picked = await prisma.mount.findMany({ where: { id: { in: ids } } })
+    if (picked.length !== ids.length) {
+      throw new AppError('部分发布项已不存在，请刷新后重试', 404)
+    }
+    for (const m of picked) {
+      if (m.userId !== req.user.id && req.user.role !== 'ADMIN') {
+        throw new AppError(`「${m.name}」不是你发布的，无法取消发布`, 403, {
+          key: '「{}」不是你发布的，无法取消发布',
+          params: [m.name],
+        })
+      }
+    }
+
+    const all = await prisma.mount.findMany({ select: { id: true, parentId: true } })
+    const byId = new Map(all.map((n) => [n.id, n]))
+    const victims = new Set<string>()
+    for (const id of ids) {
+      for (const x of subtreeOf(all, id)) victims.add(x)
+    }
+
+    // 深→浅：叶子先走，父节点随后才没有子项引用它
+    const ordered = [...victims].sort((a, b) => depthOf(byId, b) - depthOf(byId, a))
+    await prisma.$transaction(ordered.map((x) => prisma.mount.delete({ where: { id: x } })))
+    return { ok: true, removed: victims.size }
   })
 
   /* ---------------- 选择器用的磁盘浏览 ---------------- */

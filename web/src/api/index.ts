@@ -309,6 +309,14 @@ export const api = {
     downloadUrl: (id: string) =>
       `/api/files/${id}/download?token=${encodeURIComponent(localStorage.getItem(TOKEN_KEY) ?? '')}`,
     remove: (id: string) => http.delete(`/files/${id}`).then((r) => r.data),
+    /**
+     * 批量删除。服务端只处理属于当前用户的记录，部分失败会回传 failed 里的名称，
+     * 所以返回结构比单个删除多两个字段。
+     */
+    batchRemove: (ids: string[]) =>
+      http
+        .post<{ ok: boolean; removed: number; failed: string[] }>('/files/batch-delete', { ids })
+        .then((r) => r.data),
   },
 
   uploads: {
@@ -370,6 +378,11 @@ export const api = {
     grantableUsers: () => http.get<GrantableUser[]>('/mounts/grantable-users').then((r) => r.data),
     remove: (id: string) =>
       http.delete<{ ok: boolean; removed: number }>(`/mounts/${id}`).then((r) => r.data),
+    /** 批量取消发布：removed 是实际消失的节点总数（含被连带移除的子项） */
+    batchRemove: (ids: string[]) =>
+      http
+        .post<{ ok: boolean; removed: number }>('/mounts/batch-delete', { ids })
+        .then((r) => r.data),
     browse: (id: string, sub = '') =>
       http
         .get<{ mount: MountItem; sub: string; items: DiskEntry[] }>(`/mounts/${id}/browse`, {
