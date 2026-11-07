@@ -52,7 +52,8 @@ ShareEverything/
     ├── check-i18n.ts         中英对齐校验（漏译 / 缺键 / 废弃词条 / 残留中文）
     └── dist-template/        产物里的启动与守护脚本模板
         ├── *.bat / start.sh     三行包装，双击即用
-        └── tools/*.mjs          ctl（启动/停止/状态/日志/自启）、setup（生成 pm2 配置）、show-logs
+        └── tools/*.mjs          ctl（启动/停止/状态/日志/自启）、setup（生成 pm2 配置）、
+                                 show-logs、gen-cert（自签 HTTPS 证书）
 ```
 
 ---
@@ -738,16 +739,73 @@ connect-src 'self'; form-action 'self'; frame-ancestors 'none'
 三处**刻意**的取舍，改之前先看清楚：
 
 1. **`style-src` 必须留 `'unsafe-inline'`**。它同时兜住 CSP3 的 `style-src-attr`，而 Vue 的 `:style`、Element Plus 的定位样式写的都是元素的 style **属性**。去掉不是「稍微丑一点」，是布局直接散架。
-2. **关掉了 HSTS**（helmet 默认开启，max-age 半年）。浏览器一旦收到就会记住「这个主机必须走 HTTPS」，之后用 `http://` 访问会被自动升级成 `https://`——而服务端只有 HTTP，等于站点直接打不开，且在 max-age 到期前很难撤销。**等真正上了 HTTPS 再打开**。
-3. **CSP 里没有 `upgrade-insecure-requests`**，道理同上：纯 HTTP 部署下它会让页面里所有请求被升级成 HTTPS 从而全部失败。
+2. **HSTS 跟着 TLS 开关走**。配了 `TLS_CERT`/`TLS_KEY` 就下发 `max-age=<HSTS_MAX_AGE>`（默认 180 天），没配就关掉。纯 HTTP 下发 HSTS 会把站点锁死，浏览器在 max-age 到期前根本不会听服务端的 HTTP。以前这里是写死 `false`、靠文档提醒「上完 HTTPS 记得改回来」，现在由代码自己判断，少一处迟早会漏的人为约定。
+3. **`upgrade-insecure-requests` 同理按条件加**：纯 HTTP 部署下它让页面里所有请求被升级成 HTTPS 从而全部失败；HTTPS 下它只是兜底（前端全是同源相对路径，正常情况下不会触发）。
 
 另外 `frameguard: deny`、`referrerPolicy: no-referrer`、`crossOriginResourcePolicy: same-origin` 都保持开启；`crossOriginEmbedderPolicy` 关闭（它是为 `SharedArrayBuffer` 这类特性准备的，本项目用不上，开着反而给引入任何跨源资源埋雷）。
+
+### 启用 HTTPS
+
+服务端**自己终结 TLS**，不需要在前面挂 nginx，端口也不变。开关是 `.env` 里的两项：
+
+```ini
+TLS_CERT=certs/server.crt
+TLS_KEY=certs/server.key
+```
+
+两项都填才启用；**只填一项直接启动失败**，不会静默退回 HTTP——那种「以为开了、其实在明文跑」的故障最难发现。路径相对运行目录，也能写绝对路径。
+
+**没有证书就生成一张自签的**：
+
+```bash
+node tools/gen-cert.mjs
+```
+
+它会读运行目录下的 `cert-hosts.conf`（和 `.env` 同一个层级，每行一个域名或 IP），写什么就签什么；该文件不存在或全是注释时，退回自动收集本机所有 IPv4 与主机名。`127.0.0.1`、`localhost`、`::1` 无论配不配都自动写进 SAN，本机永远能直接访问 `https://localhost:3000` 而不用输 IP。生成到 `certs/`，并把两行配置自动写进 `.env`。需要系统里有 `openssl`，Windows 上随 Git 一起装。命令行还能临时追加 `--host 名字`、`--config 其它文件`、`--auto-ip`（配置之外再并入网卡 IP）。
+
+自签证书浏览器一定会警告，这是预期的。要消除警告，就把 `certs/server.crt` 导入客户端系统的受信任根证书区；只是内部临时用，点「高级 → 继续前往」也能进。
+
+#### 服务器 IP 会变怎么办
+
+证书校验的是**URL 里的名字**，不是机器的身份。把 IP 写死进 SAN，DHCP 一换地址就报「证书与域名不匹配」，只能重签，每台客户机还得重新信任一次。按省事程度有三种做法：
+
+**1. 把 IP 固定住（首选）**。路由器里给服务器网卡做 DHCP 静态租约／地址保留，或服务器设静态 IP。零改动，证书和客户端都不用碰。
+
+**2. 固定域名 + 客户机 hosts**。域名不用注册、不用公网 DNS，自己起一个不冲突的即可。把域名写进 `cert-hosts.conf`（一行一个），或直接：
+
+```bash
+node tools/gen-cert.mjs --host se.internal
+```
+
+每台要访问（**包括打开分享链接**）的客户机加一行：
+
+```
+<服务器当前IP>    se.internal
+```
+
+- Windows：`C:\Windows\System32\drivers\etc\hosts`（管理员权限）；Linux/macOS：`/etc/hosts`（sudo）
+- 访问 `https://se.internal:3000`；hosts 不带端口，端口仍写在 URL 里
+- 之后 IP 再变**只改这一行**：证书不用重签、客户端不用重新导入、HSTS 绑的是域名也不受影响
+- **别用 `.local`**：RFC 6762 把它保留给 mDNS，系统会走组播解析而不读 hosts。推荐 `.internal`（ICANN 2024-07-29 决议永久保留给私用）或 `.home.arpa`（RFC 8375），也可以用自己持有的公网域名的子域
+- 浏览器开了「安全 DNS / DNS over HTTPS」时可能绕过 hosts，遇到解析失败先关掉该选项
+- 手机改 hosts 不方便、机器多时维护成本高 → 改在内网 DNS（路由器 dnsmasq / AdGuard Home）里，客户机零配置，IP 变了只改一处
+- 分享链接由 `location.origin` 拼出，用域名访问时链接里就是域名；收链接的人也必须能解析这个名字
+
+**3. 自建本地 CA**。坚持用 IP 访问时的兜底思路：签一张长期 CA 根证书，客户机只导入一次，之后 IP 变了用同一把 CA 重签服务器证书即可，客户端无感。当前工具生成的是单张自签证书（`CA:FALSE`），需要自行扩展。
+
+三个使用上的后果，改之前先知道：
+
+- 原来的 `http://` 链接会连不上——服务只监听一种协议。访问地址要改成 `https://`。
+- 浏览器会记住「这个主机必须走 HTTPS」（HSTS）。**要退回 HTTP，先把 `HSTS_MAX_AGE` 设成 `0` 并重启一次**，让浏览器收到 `max-age=0`；否则在到期前 http 访问会被强制升级，看起来就像站点挂了。
+- 不要把同一端口再用 HTTP 暴露出去，那等于给 HTTPS 留了个明文旁门。
+
+顺带的好处：`navigator.clipboard` 在非安全上下文里是 `undefined`（见 `web/src/utils/clipboard.ts`），上了 HTTPS 之后「复制分享链接」才会走原生 API 而不是 `execCommand` 兜底。
 
 上线前必须做的：
 
 1. `JWT_SECRET` 想轮换或打算多实例部署时，在 `.env` 里显式配一个随机长串；不配也能安全运行——应用会自动生成并落盘到 `.jwt-secret`，**不会退回到固定密钥**
 2. **`ACCESS_CODE_KEY` 与 `.env` 一起备份，但不要和 `dev.db` 放同一份备份**。丢了它，已有的提取码全部解不开（分享还在，重设即可）；它和数据库一起泄露，加密就白做了
-2. **上 HTTPS**（目前下载链接把 token 放在 URL query 里，明文传输有泄露风险；且抽样指纹依赖 `crypto.subtle`，只在 localhost 或 HTTPS 下可用，否则自动跳过秒传）。**上完 HTTPS 记得把 helmet 的 HSTS 打开**，并把 CSP 的 `upgrade-insecure-requests` 加回去——这两个按当前 HTTP 部署是刻意关掉的
+2. **上 HTTPS**（见上一节「启用 HTTPS」）。两个理由：下载链接把 token 放在 URL query 里，明文传输可被嗅探；抽样指纹依赖 `crypto.subtle`，只在 localhost 或 HTTPS 下可用，否则自动跳过秒传。配好证书后 HSTS 与 `upgrade-insecure-requests` 会自动打开，**不用再手动改代码**
 3. 确认 `ALLOW_ADMIN_RESET_PASSWORD=false`（只在管理员忘密码时临时打开，用完立刻关；该通道仅限服务器本机，代码里写死，不受配置影响）
 4. **用低权限账号启动服务**（Node 进程的权限就是磁盘发布能读到的边界）
 5. **`server/storage` 与 `dev.db` 定期备份**

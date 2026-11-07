@@ -23,6 +23,7 @@
  */
 import fs from 'node:fs'
 import path from 'node:path'
+import https from 'node:https'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
@@ -143,16 +144,69 @@ function ensureConfig() {
   return r.status === 0
 }
 
-/** 探一下端口是否真的在应答 HTTP —— pm2 显示 online 不等于服务可用 */
+/**
+ * .env 里是否配了证书（两个变量都有值才算）。
+ *
+ * 这里只看「有没有填」，不复核文件是否存在 —— 那是服务端启动时的职责，
+ * 这里要是也校验一遍，两处判断标准早晚会不一致。注释掉的行（`# TLS_CERT=...`）
+ * 不会被 `^\s*TLS_CERT` 匹配到，符合预期。
+ */
+function readEnvTls() {
+  try {
+    const env = fs.readFileSync(path.join(root, '.env'), 'utf8')
+    const pick = (k) => env.match(new RegExp(`^\\s*${k}\\s*=\\s*(.*)$`, 'm'))?.[1]?.trim() ?? ''
+    return Boolean(pick('TLS_CERT') && pick('TLS_KEY'))
+  } catch {
+    return false
+  }
+}
+
+/** 当前应该是 https 还是 http（探活与提示共用，避免两处判断走偏） */
+function scheme() {
+  return readEnvTls() ? 'https' : 'http'
+}
+
+/**
+ * 自签证书场景下的 GET。
+ *
+ * 不能用 `fetch`：它没有「本次请求忽略证书错误」的开关，而
+ * `NODE_TLS_REJECT_UNAUTHORIZED=0` 是**进程级**的，会把整个脚本后续所有 TLS
+ * 校验都关掉。这里只对这一次连接放开校验，而且目标是 127.0.0.1 自己，
+ * 不存在被中间人利用的余地 —— 自签证书本来就没法按域名链校验。
+ */
+function getJsonInsecure(url) {
+  return new Promise((resolve, reject) => {
+    const req = https.get(url, { rejectUnauthorized: false, timeout: 3000 }, (res) => {
+      let buf = ''
+      res.setEncoding('utf8')
+      res.on('data', (c) => {
+        buf += c
+      })
+      res.on('end', () => {
+        try {
+          resolve(JSON.parse(buf))
+        } catch {
+          reject(new Error(`返回的不是 JSON（HTTP ${res.statusCode}）`))
+        }
+      })
+    })
+    req.on('timeout', () => req.destroy(new Error('连接超时')))
+    req.on('error', reject)
+  })
+}
+
+/** 探一下端口是否真的在应答 —— pm2 显示 online 不等于服务可用 */
 async function probeHealth() {
   const port = readEnvPort()
-  const url = `http://127.0.0.1:${port}/api/health`
+  const secure = readEnvTls()
+  const url = `${secure ? 'https' : 'http'}://127.0.0.1:${port}/api/health`
   try {
-    const res = await fetch(url, { signal: AbortSignal.timeout(3000) })
-    const j = await res.json()
-    return { ok: true, url, data: j }
+    const data = secure
+      ? await getJsonInsecure(url)
+      : await (await fetch(url, { signal: AbortSignal.timeout(3000) })).json()
+    return { ok: true, url, data, secure }
   } catch (e) {
-    return { ok: false, url, error: e?.message ?? String(e) }
+    return { ok: false, url, error: e?.message ?? String(e), secure }
   }
 }
 
@@ -180,7 +234,10 @@ async function cmdStart() {
   const info = appInfo()
   console.log('')
   if (info && info.status === 'online') {
-    console.log(`已启动：pid ${info.pid}，访问 http://localhost:${readEnvPort()}`)
+    console.log(`已启动：pid ${info.pid}，访问 ${scheme()}://localhost:${readEnvPort()}`)
+    if (scheme() === 'https') {
+      console.log('  提示：自签证书首次访问时浏览器会报「不安全」，需在客户端导入证书（见运行说明「启用 HTTPS」）')
+    }
     console.log(`日志：${path.join(LOGS_DIR, 'app-<日期>.log')}`)
     console.log('停止 stop.bat ／ 重启 restart.bat ／ 看日志 logs.bat')
     const h = await probeHealth()
@@ -192,7 +249,7 @@ async function cmdStart() {
   console.log('启动后状态不是 online，下面是最近的进程输出：')
   pm2(['logs', APP_NAME, '--lines', '50', '--nostream'], { inherit: true })
   console.log('')
-  console.log('常见原因：端口被占用、.env 配置有误、数据库文件无写入权限。')
+  console.log('常见原因：端口被占用、.env 配置有误（含 TLS_CERT / TLS_KEY 路径）、数据库文件无写入权限。')
   return 1
 }
 
@@ -243,10 +300,10 @@ async function cmdStatus() {
     }
   }
   console.log('')
-  console.log('=== HTTP 健康检查 ===')
+  console.log('=== 健康检查 ===')
   const h = await probeHealth()
   if (h.ok) {
-    console.log(`  ${h.url}  正常`)
+    console.log(`  ${h.url}  正常${h.secure ? '（HTTPS，已跳过自签证书校验）' : ''}`)
     console.log(`  进程号 ${h.data.pid}   启动于 ${h.data.startedAt}   已运行 ${fmtDuration(h.data.uptimeSec * 1000)}`)
     console.log(`  Node ${h.data.node}`)
     console.log(`  当前日志 ${h.data.logFile}`)

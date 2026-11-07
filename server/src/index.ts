@@ -87,7 +87,22 @@ async function shutdown(signal: string): Promise<void> {
 process.on('SIGINT', () => void shutdown('SIGINT'))
 process.on('SIGTERM', () => void shutdown('SIGTERM'))
 
-const app = fastify({ logger: false, bodyLimit: config.bodyLimit })
+/**
+ * 配了证书就是一个 HTTPS 服务，没配就还是 HTTP —— 同一个入口，不给运维留
+ * 「以为开了其实是明文」的空间。证书在这里交给 Node 的 TLS 栈，
+ * 后面所有路由、流式下载、分片上传都不需要知道协议上的差别。
+ */
+const app = fastify({
+  logger: false,
+  bodyLimit: config.bodyLimit,
+  ...(config.tls ? { https: { key: config.tls.key, cert: config.tls.cert } } : {}),
+})
+
+if (config.tls) {
+  console.log(`[tls] 已启用 HTTPS：证书 ${config.tls.certPath}`)
+} else {
+  console.log('[tls] 未配置 TLS_CERT / TLS_KEY，以 HTTP 启动')
+}
 
 /**
  * Fastify 自己抛的解析错误（不是我们的 AppError）原文是英文，而翻译表是
@@ -139,14 +154,25 @@ app.setNotFoundHandler((req, reply) => {
  * 2. **CSP 的 `upgrade-insecure-requests`**。道理同上：它让浏览器把页面里所有
  *    `http://` 请求升级成 `https://`，纯 HTTP 部署下等于全部请求失败。
  *
+ * 这两项现在都**跟着 TLS 开关走**（见下方 hsts 与 directives 里的同名项）：
+ * 配了证书就一起打开，没配就一起关掉。以前这里是写死 false 的，靠 README 提醒
+ * 「上 HTTPS 后记得改回来」—— 那种约定迟早会漏，不如让代码自己判断。
+ *
  * 另外 CSP 这里没有沿用 helmet 的默认策略（`useDefaults: false`），而是按下述原则
  * 逐条写死：本项目是 Vite 构建的单页应用，产物只有**一个外链 module 脚本 + 一个外链 CSS**，
  * 页面里没有内联脚本、没有内联事件处理器、没有 `eval`、没有 Web Worker、没有 blob URL，
  * 因此 `script-src` 可以严格到 `'self'`，连内联脚本属性一起禁掉。
  */
 await app.register(helmet, {
-  // 见上面的第 1 条：HTTP 部署下发 HSTS 有害，上 HTTPS 后要改回来
-  hsts: false,
+  /**
+   * HSTS：**只在真的跑 HTTPS 时才下发**。
+   *
+   * 配了证书就是 `max-age=<HSTS_MAX_AGE>`（默认 180 天）—— 浏览器从此记住
+   * 「这个主机只能走 HTTPS」，下次即使用 `http://` 打开也会被本地升级掉。
+   * 没配证书时保持 `false`：纯 HTTP 下发 HSTS 会把站点直接锁死，而且
+   * 在 max-age 到期前很难撤销。
+   */
+  hsts: config.tls && config.hstsMaxAge > 0 ? { maxAge: config.hstsMaxAge } : false,
 
   contentSecurityPolicy: {
     useDefaults: false,
@@ -173,7 +199,13 @@ await app.register(helmet, {
       formAction: ["'self'"],
       // 不需要被任何页面嵌进 iframe；与下面的 frameguard: deny 互为备份
       frameAncestors: ["'none'"],
-      // 注意：**不要**在这里加 upgrade-insecure-requests，理由见上面的第 2 条
+      /**
+       * 只在 HTTPS 下加。作用是让浏览器把页面里残留的 `http://` 子资源请求
+       * 自动升级成 https（本项目都是同源相对路径，正常不会触发，属于兜底）。
+       * 纯 HTTP 部署下加它是灾难 —— 所有请求都会被升级到不存在的端口，
+       * 所以必须在没有证书时关掉。
+       */
+      ...(config.tls ? { upgradeInsecureRequests: [] } : {}),
     },
   },
 
@@ -185,7 +217,14 @@ await app.register(helmet, {
   // 开了反而会给将来引入任何跨源资源埋雷
   crossOriginEmbedderPolicy: false,
 })
-console.log('[helmet] 安全响应头已启用；HSTS 未开启（HTTP 部署下发它有害，上 HTTPS 后需打开）')
+const hstsOn = Boolean(config.tls && config.hstsMaxAge > 0)
+console.log(
+  hstsOn
+    ? `[helmet] 安全响应头已启用；HSTS 已开启（max-age=${config.hstsMaxAge} 秒）`
+    : config.tls
+      ? '[helmet] 安全响应头已启用；HSTS 已按要求关闭（HSTS_MAX_AGE=0）'
+      : '[helmet] 安全响应头已启用；HSTS 未开启（HTTP 部署下发它有害，配好证书后自动打开）',
+)
 
 /* ---------- 跨域 ---------- */
 
@@ -387,7 +426,13 @@ const MIME: Record<string, string> = {
 
 try {
   await app.listen({ port: config.port, host: config.host })
-  console.log(`ShareEverything 已启动: http://localhost:${config.port}  (pid ${process.pid})`)
+  const scheme = config.tls ? 'https' : 'http'
+  console.log(`ShareEverything 已启动: ${scheme}://localhost:${config.port}  (pid ${process.pid})`)
+  if (config.tls) {
+    // 自签证书几乎必然不被浏览器信任，第一次打开会出现红色警告页。
+    // 这句提示只是让日志能自解释，真正的办法是把证书导入客户端（见运行说明）。
+    console.log('  证书为自签时浏览器会提示不安全，需在客户端导入信任，或用内部 CA 签发的证书')
+  }
   console.log(`版本: ${versionLabel()}`)
   console.log(`文件存储根目录: ${config.storageRoot}`)
   // 把「实际生效」的白名单打出来：`D:` 这类写法过去会被悄悄解析成进程 cwd，

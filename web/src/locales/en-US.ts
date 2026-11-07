@@ -100,7 +100,7 @@ export default {
     },
     hintResetOffsite: {
       title: 'Administrator password recovery only works on the server itself',
-      desc: 'This address is not the server machine, so password recovery will not take effect (a wrong password still reports “incorrect account or password”). Please open http://127.0.0.1 on the server instead.',
+      desc: 'This address is not the server machine, so password recovery will not take effect (a wrong password still reports “incorrect account or password”). Please open the site from 127.0.0.1 on the server itself instead.',
     },
     hintResetOnRemote: {
       title: 'Administrator password recovery is enabled',

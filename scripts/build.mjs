@@ -91,9 +91,40 @@ function fail(msg) {
   process.exit(1)
 }
 
+/** 本次打包挪开的目录，结束时提示用户手动清理 */
+const trashLeft = []
+
+/**
+ * 删除目录，删不掉就**改名挪开**。
+ *
+ * 为什么要留这条退路：有些环境里原地递归删除会失败 —— 沙箱把 `fs.rmSync`
+ * 接到回收站实现上，遇到大目录或回收站不可用时会超时；Windows 上文件被
+ * 别的进程占用（杀毒、编辑器索引）也会 EPERM。这些情况下打包本身并没有
+ * 不可恢复的错误（后面会重新 mkdir 出同名目录），直接 `process.exit(1)`
+ * 等于把一个环境问题变成了「打不了包」。
+ *
+ * 挪开的目录带 `.trash-<时间戳>` 后缀，落在 `.gitignore` 的 `dist.*` 规则里，
+ * 不会误入库；打包结束时会提示还剩哪些可以手动删。
+ */
 function rmrf(p) {
-  fs.rmSync(p, { recursive: true, force: true })
+  if (!fs.existsSync(p)) return
+  try {
+    fs.rmSync(p, { recursive: true, force: true })
+    return
+  } catch (err) {
+    const aside = `${p}.trash-${Date.now()}`
+    try {
+      fs.renameSync(p, aside)
+      process.stdout.write(
+        `    无法直接删除 ${path.basename(p)}（${err.code ?? err.message}），已改名挪开为 ${path.basename(aside)}\n`,
+      )
+      trashLeft.push(aside)
+    } catch (err2) {
+      fail(`既删不掉也挪不开：${p}\n  删除失败：${err.message}\n  改名失败：${err2.message}`)
+    }
+  }
 }
+
 
 /**
  * 手写递归拷贝。
@@ -411,6 +442,13 @@ await step('生成运行配置', () => {
       '',
       'PORT=3000',
       'HOST=0.0.0.0',
+      '',
+      '# HTTPS：两项都填才启用，只填一项会启动失败（不会静默退回 HTTP）。',
+      '# 没有证书时在服务器本机执行：node tools/gen-cert.mjs （自动生成并写入这两行）',
+      '# TLS_CERT=certs/server.crt',
+      '# TLS_KEY=certs/server.key',
+      '# HSTS 秒数，默认 180 天、0 关闭。退回 HTTP 之前先设 0 并重启一次。',
+      '# HSTS_MAX_AGE=15552000',
       'JWT_SECRET=' + secret,
       'JWT_EXPIRES_IN=7d',
       '',
@@ -435,7 +473,7 @@ await step('生成运行配置', () => {
       '',
       '# 管理员密码找回（默认关闭）。打开后可用管理员账号在登录页直接重设密码，',
       '# 应对「管理员忘记密码」。该通道只认服务器本机（127.0.0.1 / localhost），',
-      '# 所以要在服务器上打开 http://127.0.0.1:3000 操作；用完请改回 false，',
+      '# 所以要在服务器上直接用本机地址打开本站操作；用完请改回 false，',
       '# 开着的时候本机任何错密码都会被写成新密码。',
       'ALLOW_ADMIN_RESET_PASSWORD=false',
       '',
@@ -527,6 +565,8 @@ await step('生成运行配置', () => {
         '| `.pm2/` | pm2 守护进程的状态，放到包内以便整个目录可以搬走 |',
         '| `ecosystem.config.json` | 守护参数，首次启动自动生成，可手动调 |',
         '| `.env` | 运行配置。**已生成随机 JWT_SECRET，请勿外泄** |',
+        '| `certs/` | HTTPS 证书与私钥，执行 `tools/gen-cert.mjs` 后才有；不用 HTTPS 时不出现 |',
+        '| `cert-hosts.conf` | 证书访问名配置（域名/IP，每行一个），`tools/gen-cert.mjs` 会读它；不用 HTTPS 时可忽略 |',
         '| `VERSION` / `build-info.json` | 版本号与打包时间（`0.2.0+2026.10.17.1435`，`+` 前是语义版本，后是打包时刻） |',
         '| `CHANGELOG.md` | 这一版改了什么。同版本号下靠 `+` 后的打包时刻区分具体是哪个包 |',
         '| `LICENSE` | Apache-2.0 许可全文 |',
@@ -544,6 +584,8 @@ await step('生成运行配置', () => {
         '| `.pm2/` | pm2 守护进程的状态，放到包内以便整个目录可以搬走 |',
         '| `ecosystem.config.json` | 守护参数，首次启动自动生成，可手动调 |',
         '| `.env` | 运行配置。**已生成随机 JWT_SECRET，请勿外泄** |',
+        '| `certs/` | HTTPS 证书与私钥，执行 `tools/gen-cert.mjs` 后才有；不用 HTTPS 时不出现 |',
+        '| `cert-hosts.conf` | 证书访问名配置（域名/IP，每行一个），`tools/gen-cert.mjs` 会读它；不用 HTTPS 时可忽略 |',
         '| `VERSION` / `build-info.json` | 版本号与打包时间（`0.2.0+2026.10.17.1435`，`+` 前是语义版本，后是打包时刻） |',
         '| `CHANGELOG.md` | 这一版改了什么。同版本号下靠 `+` 后的打包时刻区分具体是哪个包 |',
         '| `LICENSE` | Apache-2.0 许可全文 |',
@@ -622,12 +664,99 @@ await step('生成运行配置', () => {
       '这个目录可以整体搬到别的盘或别的机器：启动脚本每次都按当前位置重算路径。',
       '搬动后如果 `ecosystem.config.json` 里的路径对不上，会自动重新生成，原文件备份为 `.bak`。',
       '',
+      '## 启用 HTTPS',
+      '',
+      '服务端自己终结 TLS，不用另装 nginx，端口也不变（默认仍是 3000）。',
+      '',
+      '**有内部 CA 或现成证书**：把证书与私钥放到 `certs/`，然后在 `.env` 里填',
+      '`TLS_CERT=certs/server.crt`、`TLS_KEY=certs/server.key`，重启即可。',
+      '启动日志会出现 `[tls] 已启用 HTTPS`。两项只填一项会直接启动失败 ——',
+      '这是故意的，避免「以为开了 HTTPS、其实还在明文跑」。',
+      '',
+      '**没有证书**：在服务器本机执行',
+      '',
+      '```',
+      'node tools/gen-cert.mjs',
+      '```',
+      '',
+      '它会读运行目录下的 `cert-hosts.conf`（和 `.env` 同一个层级，每行一个域名或 IP）。',
+      '写什么就签什么；该文件不存在或全是注释时，退回自动收集本机所有 IPv4 与主机名。',
+      '`127.0.0.1`、`localhost`、`::1` 无论配不配都自动写进证书，本机永远能直接',
+      '访问 `https://localhost:3000`，不必输入 IP。证书写到 `certs/`，两行配置自动写进 `.env`。',
+      '需要系统里有 `openssl`（Linux 基本自带；Windows 随 Git 一起装）。',
+      '',
+      '```',
+      '# cert-hosts.conf 示例',
+      'se.internal          # 内网域名（客户机配 hosts 或内网 DNS 指到服务器）',
+      '172.19.42.200        # 固定 IP',
+      '```',
+      '',
+      '命令行还能临时追加：`--host 名字`、`--config 其它文件`、`--auto-ip`',
+      '（配置文件之外再并入网卡 IP）。改完配置重跑一次脚本即重签。',
+      '',
+      '### 服务器 IP 会变怎么办',
+      '',
+      '证书里写的是**访问用的名字**，不是机器的身份。把 IP 写进证书，DHCP 一换地址就会',
+      '报「证书与域名不匹配」，只能重签、每台客户机还得重新信任一次。三个办法，按省事程度排：',
+      '',
+      '**1. 把 IP 固定住（最推荐）**：在路由器里给服务器网卡做 DHCP 静态租约／地址保留，',
+      '或在服务器上设静态 IP。零改动，证书、hosts、客户端都不用碰。',
+      '',
+      '**2. 用固定域名 + 客户机 hosts**（IP 实在固定不了时）：域名不用注册、不用公网 DNS，',
+      '自己起一个不冲突的即可，例如 `se.internal`。把域名写进 `cert-hosts.conf`（一行一个），',
+      '或直接：',
+      '',
+      '```',
+      'node tools/gen-cert.mjs --host se.internal',
+      '```',
+      '',
+      '然后每台要访问（含打开分享链接）的客户机加一行 hosts：',
+      '',
+      '```',
+      '<服务器当前IP>    se.internal',
+      '```',
+      '',
+      '- Windows：`C:\\Windows\\System32\\drivers\\etc\\hosts`（管理员权限编辑）',
+      '- Linux / macOS：`/etc/hosts`（sudo 编辑）',
+      '- 访问 `https://se.internal:3000`，hosts 不带端口，端口仍写在 URL 里',
+      '- 之后 IP 再变**只改这一行**：证书不用重签、客户端不用重新导入、HSTS 绑的是域名也不受影响',
+      '- **域名别用 `.local`**（RFC 6762 保留给 mDNS，系统会走组播解析而不读 hosts）；',
+      '  推荐 `.internal`（ICANN 2024 年永久保留给私用）或 `.home.arpa`（RFC 8375）',
+      '- 浏览器若开了「安全 DNS / DNS over HTTPS」，可能绕过 hosts 导致解析失败，',
+      '  遇到时先关掉该选项；手机不方便改 hosts，机器多时改在内网 DNS（路由器 dnsmasq、',
+      '  AdGuard Home 等）里，客户机零配置、IP 变了只改一处',
+      '',
+      '**3. 自建本地 CA**：坚持用 IP 访问时，可以签一张长期 CA 根证书让客户机只导入一次，',
+      '之后 IP 变化只需用同一把 CA 重签服务器证书。当前工具生成的是单张自签证书，',
+      '这条思路需要自行扩展。',
+      '',
+      '**注意**：分享链接是按 `location.origin` 拼的，用域名访问时链接里就是域名。',
+      '凡是可能收到分享链接的客户机都得能解析这个名字，否则链接打不开。',
+      '',
+      '**浏览器仍会提示不安全**，因为证书不是公信 CA 签的，属于预期现象。要让警告消失，',
+      '把 `certs/server.crt` 导入客户端的「受信任的根证书颁发机构」：',
+      '',
+      '- Windows：双击 `.crt` → 安装证书 → 本地计算机 → 受信任的根证书颁发机构',
+      '- macOS：钥匙串访问 → 系统 → 导入后设为「始终信任」',
+      '- Linux：拷到 `/usr/local/share/ca-certificates/`，执行 `update-ca-certificates`',
+      '- Firefox：用自己的证书库，需在「隐私与安全 → 证书」里单独导入',
+      '',
+      '**换成 HTTPS 之后**：',
+      '',
+      '- 访问地址要写 `https://`，端口不变；原来的 `http://` 链接会连不上（只监听一种协议）。',
+      '- 浏览器会记住「这个主机必须走 HTTPS」（HSTS，默认 180 天）。**要退回 HTTP，先把',
+      '  `.env` 里的 `HSTS_MAX_AGE` 设成 `0` 并重启一次**，让浏览器收到 `max-age=0` 清掉记录；',
+      '  否则在到期之前，用 http 访问会被强制升级成 https，站点看起来就像挂了。',
+      '- 证书与私钥一起备份（`certs/server.key` 只给属主读）。换机器重新生成不影响已分享的数据，',
+      '  但每台客户端都要重新信任一次。',
+      '- 不要在同一个端口再开 HTTP：那等于给 HTTPS 留了个明文旁门。',
+      '',
       '## 上线前必做',
       '',
       '1. 改 `.env` 里的 `JWT_SECRET`（默认已是随机值，换环境请手动改一个）',
       '2. 配置 `MOUNT_ALLOWED_ROOTS`，限制可发布的目录范围',
       '3. 确认 `ALLOW_ADMIN_RESET_PASSWORD` 是 `false`（只在管理员忘密码时临时打开，且只能从服务器本机操作）',
-      '4. 用 HTTPS（登录 token 会出现在 URL query 里）',
+      '4. 启用 HTTPS（见上一节）：明文 HTTP 下，登录令牌与下载链接在局域网里可被嗅探',
       '5. 用低权限系统账号启动进程',
       '',
       '## 版本号',
@@ -749,4 +878,9 @@ if (offline) {
 }
 console.log('  守护     : start.bat / stop.bat / restart.bat / status.bat / logs.bat')
 if (zipFile) console.log(`  压缩包  : ${zipFile}`)
+if (trashLeft.length) {
+  console.log('')
+  console.log('注意：以下旧目录没能直接删除，已改名挪开（不影响本次产物），确认无用后可手动删：')
+  for (const p of trashLeft) console.log(`  ${p}`)
+}
 console.log('')

@@ -149,6 +149,59 @@ function resolveAccessCodeKey(): { key: string; source: 'env' | 'file' | 'genera
 const accessCodeKey = resolveAccessCodeKey()
 
 /**
+ * 解析 HTTPS 证书。`TLS_CERT` 与 `TLS_KEY` **两个都填**才启用 HTTPS，都不填就还是 HTTP。
+ *
+ * 三条刻意的规则，都是为了「配置有问题时宁可起不来，也不要静默降级」：
+ *
+ * 1. **只填一个直接抛错**。半截配置如果静默退回 HTTP，运维会以为自己在跑 HTTPS，
+ *    而流量一直在明文传输 —— 这种错必须让人当场看见。
+ * 2. **文件读不到直接抛错**，不兜底、不重试。证书路径写错就是写错。
+ * 3. **相对路径按运行目录解析**，与 STORAGE_ROOT / DATABASE_URL 的基准一致，
+ *    这样安装包解压到哪，`certs/` 就该在哪，不用为每台机器改绝对路径。
+ *
+ * 这里只校验 PEM 的**形状**（有没有 BEGIN 标记），不做配对与有效期校验：
+ * 那种检查重复造轮子，TLS 握手本身会给出更准确的报错。这一步的价值只是在
+ * 启动阶段挡住「把私钥填进 TLS_CERT」这类低级错误。
+ */
+function resolveTls(): {
+  key: Buffer
+  cert: Buffer
+  certPath: string
+  keyPath: string
+} | null {
+  const rawCert = (process.env.TLS_CERT ?? '').trim()
+  const rawKey = (process.env.TLS_KEY ?? '').trim()
+  if (!rawCert && !rawKey) return null
+  if (!rawCert || !rawKey) {
+    throw new Error(
+      'TLS_CERT 与 TLS_KEY 必须同时配置。只填其中一个不会启用 HTTPS，也不会退回 HTTP —— 请补齐或都留空。',
+    )
+  }
+
+  const certPath = path.resolve(serverRoot, rawCert)
+  const keyPath = path.resolve(serverRoot, rawKey)
+  const read = (p: string, label: string): Buffer => {
+    try {
+      return fs.readFileSync(p)
+    } catch {
+      throw new Error(`读取 ${label} 失败：${p}（文件不存在或没有读权限）`)
+    }
+  }
+
+  const cert = read(certPath, '证书文件 TLS_CERT')
+  const key = read(keyPath, '私钥文件 TLS_KEY')
+  if (!cert.includes('BEGIN CERTIFICATE')) {
+    throw new Error(`TLS_CERT 不是 PEM 格式的证书：${certPath}`)
+  }
+  if (!key.includes('PRIVATE KEY')) {
+    throw new Error(`TLS_KEY 不是 PEM 格式的私钥：${keyPath}`)
+  }
+  return { cert, key, certPath, keyPath }
+}
+
+const tls = resolveTls()
+
+/**
  * 允许跨域访问的来源白名单，逗号或分号分隔。
  *
  * 默认**为空**，而空的意思是「根本不注册 CORS 插件」—— 本应用前后端同源
@@ -167,6 +220,17 @@ const corsOrigins: string[] | null = rawCorsOrigins
 export const config = {
   port: Number(process.env.PORT ?? 3000),
   host: process.env.HOST ?? '0.0.0.0',
+  /** HTTPS 证书；null = 未配置，按 HTTP 启动 */
+  tls,
+  /**
+   * HSTS 的 max-age（秒），默认 180 天。**只在启用了 HTTPS 时才下发**，设 0 关闭。
+   *
+   * 为什么要有这个开关：HSTS 对浏览器是单向阀 —— 一旦记住「这个主机必须走 HTTPS」，
+   * 在 max-age 到期前用 http:// 访问会被自动升级，服务端不再听 HTTP 的话。
+   * 万一要退回 HTTP 部署，得先把这里设 0、让浏览器收到一次「max-age=0」清掉记录，
+   * 否则站点会在一段时间里彻底打不开。改回 HTTP 之前请先读运行说明里的回退步骤。
+   */
+  hstsMaxAge: Number(process.env.HSTS_MAX_AGE ?? 180 * 24 * 3600),
   /** JWT 签名密钥。永远不会是硬编码的固定值，来源见 resolveJwtSecret */
   jwtSecret: jwtSecret.secret,
   /** 密钥来源：env = .env 里配的；file = 复用上次生成的；generated = 本次新生成（启动时会提示） */
