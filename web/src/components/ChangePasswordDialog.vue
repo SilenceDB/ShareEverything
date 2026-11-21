@@ -83,7 +83,7 @@ async function submit() {
 </script>
 
 <template>
-  <el-dialog v-model="visible" :title="t('account.changePassword')" width="420px" append-to-body>
+  <el-dialog v-model="visible" :title="t('account.changePassword')" width="min(420px, 92vw)" append-to-body>
     <el-form ref="formRef" :model="form" :rules="rules" label-width="120px" @submit.prevent>
       <el-form-item :label="t('password.oldLabel')" prop="oldPassword">
         <el-input

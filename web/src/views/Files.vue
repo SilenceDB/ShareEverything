@@ -14,6 +14,7 @@ import { ElMessage, ElMessageBox, type TableInstance } from 'element-plus'
 import { Search } from '@element-plus/icons-vue'
 import { api, type FileItem } from '../api'
 import { useUserStore } from '../stores/user'
+import { useIsMobile } from '../composables/useIsMobile'
 import ShareDialog from '../components/ShareDialog.vue'
 import TransferPanel from '../components/TransferPanel.vue'
 import { uploadFile, type TransferControl, type TransferSnapshot } from '../utils/uploader'
@@ -30,6 +31,8 @@ import {
 
 const { t } = useI18n()
 const store = useUserStore()
+/** 窄屏（<768px）：表格换成卡片列表，勾选用卡片上的复选框 */
+const isMobile = useIsMobile()
 const parent = ref('')
 const items = ref<FileItem[]>([])
 const usage = ref({ usedBytes: '0', quotaBytes: '0' })
@@ -77,13 +80,28 @@ const filteredItems = computed(() => {
   return items.value.filter((it) => it.name.toLowerCase().includes(k))
 })
 
-/* ---------------- 多选与批量删除 ---------------- */
+/* ---------------- 多选与批量删除 ----------------
+ * 选中状态只存 id，不存 row 对象：桌面端由表格勾选写入，手机端由卡片上的
+ * 复选框写入，两边共用同一份状态；行对象换了也不会「删到看不见的项」。
+ */
 
 const tableRef = ref<TableInstance>()
-const selected = ref<FileItem[]>([])
+const selectedIds = ref<string[]>([])
+const selected = computed(() => items.value.filter((it) => selectedIds.value.includes(it.id)))
+
+function isSelected(id: string) {
+  return selectedIds.value.includes(id)
+}
+
+/** 手机端复选框：点一下切一个 */
+function toggleSelect(row: FileItem) {
+  selectedIds.value = isSelected(row.id)
+    ? selectedIds.value.filter((id) => id !== row.id)
+    : [...selectedIds.value, row.id]
+}
 
 function onSelectionChange(rows: FileItem[]) {
-  selected.value = rows
+  selectedIds.value = rows.map((r) => r.id)
 }
 
 /**
@@ -94,7 +112,7 @@ function onSelectionChange(rows: FileItem[]) {
  * 删掉的是界面上看不见的项，属于最难排查的一类误操作。
  */
 function resetSelection() {
-  selected.value = []
+  selectedIds.value = []
   tableRef.value?.clearSelection()
 }
 
@@ -302,7 +320,9 @@ onMounted(load)
       </el-button>
     </div>
 
+    <!-- 桌面端用表格；窄屏（<768px）换成下面的卡片列表：表格在 390px 屏上横着滚，按钮还会被切掉 -->
     <el-table
+      v-if="!isMobile"
       ref="tableRef"
       v-loading="loading"
       :data="filteredItems"
@@ -342,9 +362,50 @@ onMounted(load)
         />
       </template>
     </el-table>
+
+    <div v-else v-loading="loading" class="mlist">
+      <div v-for="row in filteredItems" :key="row.id" class="mitem">
+        <el-checkbox
+          class="mcheck"
+          :model-value="isSelected(row.id)"
+          @change="toggleSelect(row)"
+        />
+        <div class="mmain">
+          <div class="mtitle">
+            <el-icon class="row-icon" :class="{ dir: row.isDir }">
+              <FolderOpened v-if="row.isDir" />
+              <Document v-else />
+            </el-icon>
+            <a v-if="row.isDir" class="mname" :title="row.name" @click="enterDir(row)">
+              {{ row.name }}
+            </a>
+            <span v-else class="mname" :title="row.name">{{ row.name }}</span>
+          </div>
+          <div class="mmeta">
+            <span v-if="!row.isDir">{{ human(row.size) }}</span>
+            <span>{{ formatDateTime(row.createdAt) }}</span>
+          </div>
+          <div class="mops">
+            <el-button v-if="!row.isDir" size="small" @click="openShare(row)">
+              {{ t('common.share') }}
+            </el-button>
+            <el-button v-if="!row.isDir" size="small" type="success" @click="download(row)">
+              {{ t('common.download') }}
+            </el-button>
+            <el-button size="small" type="danger" @click="remove(row)">
+              {{ t('common.delete') }}
+            </el-button>
+          </div>
+        </div>
+      </div>
+      <el-empty
+        v-if="!filteredItems.length"
+        :description="keyword ? t('common.searchEmpty', { q: search.trim() }) : t('files.empty')"
+      />
+    </div>
   </div>
 
-  <el-dialog v-model="mkdirVisible" :title="t('files.newFolder')" width="360px">
+  <el-dialog v-model="mkdirVisible" :title="t('files.newFolder')" width="min(360px, 92vw)">
     <el-input v-model="newDirName" :placeholder="t('files.folderNamePlaceholder')" />
     <template #footer>
       <el-button @click="mkdirVisible = false">{{ t('common.cancel') }}</el-button>
@@ -412,5 +473,24 @@ onMounted(load)
 .bulk-count {
   font-size: 13px;
   color: var(--el-color-danger);
+}
+/* 卡片标题前的图标：目录用主色，一眼分出能点进去的项 */
+.row-icon {
+  flex: none;
+  margin-top: 2px;
+  color: #909399;
+}
+.row-icon.dir {
+  color: #409eff;
+}
+@media (max-width: 767px) {
+  /* 工具栏在窄屏上每项独占一行，避免搜索框、策略选择互相挤 */
+  .search,
+  .policy {
+    width: 100%;
+  }
+  .space {
+    margin-left: 0;
+  }
 }
 </style>

@@ -13,10 +13,13 @@ import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { api, type ManagedUser } from '../api'
 import { useUserStore } from '../stores/user'
+import { useIsMobile } from '../composables/useIsMobile'
 import { formatDateTime, humanSize } from '../utils/format'
 
 const { t } = useI18n()
 const store = useUserStore()
+/** 窄屏（<768px）：表格换成卡片列表 */
+const isMobile = useIsMobile()
 const list = ref<ManagedUser[]>([])
 const loading = ref(false)
 
@@ -176,7 +179,7 @@ onMounted(load)
       <el-button type="primary" @click="openCreate">{{ t('users.create') }}</el-button>
     </div>
 
-    <el-table v-loading="loading" :data="list" style="width: 100%">
+    <el-table v-if="!isMobile" v-loading="loading" :data="list" style="width: 100%">
       <!-- 列宽按较长的英文标签留够，同时保证整表能装进常规窗口（否则末列按钮会被横向溢出切掉） -->
       <el-table-column :label="t('common.username')" min-width="130">
         <template #default="{ row }">
@@ -214,9 +217,44 @@ onMounted(load)
       </template>
     </el-table>
 
+    <div v-else v-loading="loading" class="mlist">
+      <div v-for="row in list" :key="row.id" class="mitem">
+        <div class="mmain">
+          <div class="mtitle">
+            <span class="mname">{{ row.username }}</span>
+            <el-tag :type="roleTag(row.role)" size="small">{{ roleText(row.role) }}</el-tag>
+            <el-tag v-if="isSelf(row)" size="small" class="me">{{ t('users.self') }}</el-tag>
+          </div>
+          <div class="mmeta">
+            <span class="wide" :title="row.email">{{ row.email }}</span>
+            <span>{{ humanSize(row.usedBytes) }} / {{ humanSize(row.quotaBytes) }}</span>
+          </div>
+          <el-progress
+            class="u-progress"
+            :percentage="usedPercent(row)"
+            :stroke-width="6"
+            :show-text="false"
+          />
+          <div class="mops">
+            <el-button size="small" @click="openReset(row)">{{ t('users.resetPassword') }}</el-button>
+            <el-button size="small" type="danger" :disabled="isSelf(row)" @click="remove(row)">
+              {{ t('common.delete') }}
+            </el-button>
+          </div>
+        </div>
+      </div>
+      <el-empty v-if="!list.length" :description="t('users.empty')" />
+    </div>
+
     <!-- 新增用户 -->
-    <el-dialog v-model="createVisible" :title="t('users.createTitle')" width="460px">
-      <el-form ref="createFormRef" :model="createForm" :rules="createRules" label-width="120px">
+    <el-dialog v-model="createVisible" :title="t('users.createTitle')" width="min(460px, 92vw)">
+      <el-form
+        ref="createFormRef"
+        :model="createForm"
+        :rules="createRules"
+        :label-position="isMobile ? 'top' : 'right'"
+        :label-width="isMobile ? 'auto' : '120px'"
+      >
         <el-form-item :label="t('common.email')" prop="email">
           <el-input v-model="createForm.email" placeholder="you@example.com" />
         </el-form-item>
@@ -252,7 +290,7 @@ onMounted(load)
     </el-dialog>
 
     <!-- 重置他人密码 -->
-    <el-dialog v-model="resetVisible" :title="t('users.resetTitle')" width="420px">
+    <el-dialog v-model="resetVisible" :title="t('users.resetTitle')" width="min(420px, 92vw)">
       <p class="reset-tip">{{ t('users.resetHint', { name: resetTarget?.username ?? '' }) }}</p>
       <el-input
         v-model="resetForm.password"
@@ -277,6 +315,7 @@ onMounted(load)
   align-items: center;
   margin-bottom: 14px;
   gap: 8px;
+  flex-wrap: wrap;
 }
 .title {
   font-size: 15px;
@@ -302,5 +341,18 @@ onMounted(load)
   font-size: 13px;
   color: #606266;
   line-height: 1.6;
+}
+/* 卡片里的配额进度条：和上面的用量文字同一块区域 */
+.u-progress {
+  margin-top: 6px;
+}
+@media (max-width: 767px) {
+  /* 窄屏下「用户管理 + 数量 + 刷新 + 新建」放不下一行，让标题先占满一行 */
+  .title {
+    flex: 1 0 100%;
+  }
+  .count {
+    margin-right: auto;
+  }
 }
 </style>

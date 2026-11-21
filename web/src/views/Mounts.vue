@@ -21,12 +21,15 @@ import {
   type MountVisibility,
 } from '../api'
 import { useUserStore } from '../stores/user'
+import { useIsMobile } from '../composables/useIsMobile'
 import { humanSize } from '../utils/format'
 import ShareDialog from '../components/ShareDialog.vue'
 import DiskPicker from '../components/DiskPicker.vue'
 
 const { t } = useI18n()
 const store = useUserStore()
+/** 窄屏（<768px）：目录树收进抽屉，表格换成卡片列表 */
+const isMobile = useIsMobile()
 
 /** 资源库根节点在树里的占位 id；parentId 为空表示挂在根下 */
 const ROOT_ID = '__root__'
@@ -79,22 +82,37 @@ const filteredRows = computed(() => {
   return rows.value.filter((m) => m.name.toLowerCase().includes(k))
 })
 
-/* ---------------- 多选与批量取消发布 ---------------- */
+/* ---------------- 多选与批量取消发布 ----------------
+ * 只存 id：桌面端由表格勾选写入，手机端由卡片复选框写入，共用同一份状态。
+ */
 
 const tableRef = ref<TableInstance>()
-const selected = ref<MountItem[]>([])
+const selectedIds = ref<string[]>([])
+const selected = computed(() => all.value.filter((m) => selectedIds.value.includes(m.id)))
 
 /** 只有发布者本人或管理员能取消发布，别人的项干脆不给勾 */
 function selectable(row: MountItem) {
   return row.canManage
 }
 
+function isSelected(id: string) {
+  return selectedIds.value.includes(id)
+}
+
+/** 手机端复选框：别人的项也能看，但只有 canManage 的能勾（跟表格里一致） */
+function toggleSelect(row: MountItem) {
+  if (!selectable(row)) return
+  selectedIds.value = isSelected(row.id)
+    ? selectedIds.value.filter((id) => id !== row.id)
+    : [...selectedIds.value, row.id]
+}
+
 function onSelectionChange(rows: MountItem[]) {
-  selected.value = rows
+  selectedIds.value = rows.map((r) => r.id)
 }
 
 function resetSelection() {
-  selected.value = []
+  selectedIds.value = []
   tableRef.value?.clearSelection()
 }
 
@@ -209,8 +227,21 @@ async function load() {
   }
 }
 
+/** 手机端的目录树：桌面在左栏常驻，窄屏收进抽屉，由「切换目录」按钮唤出 */
+const treeDrawer = ref(false)
+
 function selectNode(node: TreeNode) {
   selectedId.value = node.id
+  treeDrawer.value = false
+}
+
+/** 主操作按钮的文案：文件夹=打开、目录=浏览、文件=下载 */
+function openLabel(row: MountItem) {
+  return row.kind === 'FOLDER'
+    ? t('mounts.open')
+    : row.kind === 'DIR'
+      ? t('mounts.browse')
+      : t('common.download')
 }
 
 /** 表格里点「打开」：文件夹进入下一层，目录/文件直接浏览 */
@@ -557,7 +588,8 @@ onMounted(async () => {
     </div>
 
     <div class="body">
-      <el-aside class="side" width="220px">
+      <!-- 桌面端：目录树常驻左栏 -->
+      <el-aside v-if="!isMobile" class="side" width="220px">
         <el-tree
           :data="treeData"
           node-key="id"
@@ -572,6 +604,11 @@ onMounted(async () => {
 
       <div class="main">
         <div class="crumbs-row">
+          <!-- 窄屏：目录树收进抽屉，入口放在面包屑前面 -->
+          <el-button v-if="isMobile" size="small" class="tree-btn" @click="treeDrawer = true">
+            <el-icon><FolderOpened /></el-icon>
+            <span>{{ t('mounts.switchFolder') }}</span>
+          </el-button>
           <el-breadcrumb separator="/" class="crumbs">
             <el-breadcrumb-item v-for="(c, i) in breadcrumb" :key="c.id">
               <el-link v-if="i < breadcrumb.length - 1" type="primary" @click="selectedId = c.id">
@@ -597,6 +634,7 @@ onMounted(async () => {
 
         <div ref="tableWrap" class="table-wrap">
           <el-table
+            v-if="!isMobile"
             ref="tableRef"
             :data="filteredRows"
             style="width: 100%"
@@ -658,13 +696,7 @@ onMounted(async () => {
               <template #default="{ row }">
                 <div class="ops">
                   <el-button size="small" type="primary" @click="openRow(row)">
-                    {{
-                      row.kind === 'FOLDER'
-                        ? t('mounts.open')
-                        : row.kind === 'DIR'
-                          ? t('mounts.browse')
-                          : t('common.download')
-                    }}
+                    {{ openLabel(row) }}
                   </el-button>
                   <el-tooltip v-if="row.kind === 'DIR'" :content="t('common.download')" placement="top">
                     <el-button size="small" :icon="Download" @click="download(row)" />
@@ -702,10 +734,104 @@ onMounted(async () => {
               />
             </template>
           </el-table>
+
+          <div v-else class="mlist">
+            <div v-for="row in filteredRows" :key="row.id" class="mitem">
+              <el-checkbox
+                v-if="selectable(row)"
+                class="mcheck"
+                :model-value="isSelected(row.id)"
+                @change="toggleSelect(row)"
+              />
+              <div class="mmain">
+                <div class="mtitle">
+                  <el-icon class="row-icon" :class="row.kind.toLowerCase()">
+                    <FolderOpened v-if="row.kind === 'FOLDER'" />
+                    <Folder v-else-if="row.kind === 'DIR'" />
+                    <Document v-else />
+                  </el-icon>
+                  <a
+                    v-if="row.kind !== 'FILE'"
+                    class="mname"
+                    :title="row.name"
+                    @click="openRow(row)"
+                  >
+                    {{ row.name }}
+                  </a>
+                  <span v-else class="mname" :title="row.name">{{ row.name }}</span>
+                  <el-tag size="small" :type="KIND_TAG[row.kind as MountKind]" class="kind-tag">
+                    {{ kindLabel[row.kind as MountKind] }}
+                  </el-tag>
+                </div>
+                <div class="mmeta">
+                  <el-tag size="small" :type="VIS_TAG[row.visibility as MountVisibility]">
+                    {{ visibilityLabel[row.visibility as MountVisibility] }}
+                  </el-tag>
+                  <el-tag v-if="row.granted" size="small" type="warning">
+                    {{ t('mounts.sharedWithMe') }}
+                  </el-tag>
+                  <span v-if="row.ownerName" :title="t('mounts.publisher')">
+                    {{ row.ownerName }}
+                  </span>
+                  <span v-if="row.absPath" class="wide mono" :title="row.absPath">
+                    {{ row.absPath }}
+                  </span>
+                </div>
+                <div class="mops">
+                  <el-button size="small" type="primary" @click="openRow(row)">
+                    {{ openLabel(row) }}
+                  </el-button>
+                  <el-button v-if="row.kind === 'DIR'" size="small" @click="download(row)">
+                    {{ t('common.download') }}
+                  </el-button>
+                  <el-button v-if="row.kind !== 'FOLDER'" size="small" @click="openShare(row)">
+                    {{ t('common.share') }}
+                  </el-button>
+                  <el-dropdown v-if="row.canManage" trigger="click">
+                    <el-button size="small" :icon="MoreFilled">
+                      {{ t('common.manage') }}
+                    </el-button>
+                    <template #dropdown>
+                      <el-dropdown-menu>
+                        <el-dropdown-item @click="rename(row)">{{ t('mounts.rename') }}</el-dropdown-item>
+                        <el-dropdown-item @click="openMove(row)">{{ t('mounts.moveTo') }}</el-dropdown-item>
+                        <el-dropdown-item @click="openVisibility(row)">
+                          {{ t('mounts.changeVisibility') }}
+                        </el-dropdown-item>
+                        <el-dropdown-item divided @click="remove(row)">
+                          {{ t('mounts.unpublish') }}
+                        </el-dropdown-item>
+                      </el-dropdown-menu>
+                    </template>
+                  </el-dropdown>
+                </div>
+              </div>
+            </div>
+            <el-empty
+              v-if="!filteredRows.length"
+              :description="
+                keyword ? t('common.searchEmpty', { q: search.trim() }) : t('mounts.empty')
+              "
+            />
+          </div>
         </div>
       </div>
     </div>
   </div>
+
+  <!-- 窄屏的目录树抽屉 -->
+  <el-drawer v-model="treeDrawer" :title="t('mounts.folderTree')" direction="ltr" size="280px">
+    <el-tree
+      :data="treeData"
+      node-key="id"
+      :props="{ label: 'label', children: 'children' }"
+      :current-node-key="selectedId"
+      highlight-current
+      :expand-on-click-node="false"
+      default-expand-all
+      @node-click="selectNode"
+    />
+  </el-drawer>
 
   <!-- 新建：文件夹只要名字，目录/文件用选择器挑路径 -->
   <el-dialog
@@ -717,7 +843,7 @@ onMounted(async () => {
           ? t('mounts.publishDirTitle')
           : t('mounts.publishFileTitle')
     "
-    width="520px"
+    width="min(520px, 92vw)"
   >
     <el-form label-position="top">
       <el-form-item :label="t('mounts.nameLabel')">
@@ -778,7 +904,7 @@ onMounted(async () => {
   <el-dialog
     v-model="browseVisible"
     :title="current ? t('mounts.browseTitle', { name: current.name }) : ''"
-    width="860px"
+    width="min(860px, 92vw)"
   >
     <div class="browse-nav">
       <el-button size="small" :disabled="!sub" @click="goSub('')">
@@ -794,7 +920,7 @@ onMounted(async () => {
         </el-breadcrumb-item>
       </el-breadcrumb>
     </div>
-    <el-table :data="entries" max-height="440">
+    <el-table v-if="!isMobile" :data="entries" max-height="440">
       <el-table-column :label="t('common.name')" min-width="240">
         <template #default="{ row }">
           <el-link v-if="row.isDir" type="primary" @click="goSub(row.sub)">{{ row.name }}</el-link>
@@ -815,10 +941,39 @@ onMounted(async () => {
         </template>
       </el-table-column>
     </el-table>
+
+    <div v-else class="mlist browse-list">
+      <div v-for="row in entries" :key="row.sub" class="mitem">
+        <div class="mmain">
+          <div class="mtitle">
+            <el-icon class="row-icon" :class="{ dir: row.isDir }">
+              <FolderOpened v-if="row.isDir" />
+              <Document v-else />
+            </el-icon>
+            <a v-if="row.isDir" class="mname" :title="row.name" @click="goSub(row.sub)">
+              {{ row.name }}
+            </a>
+            <span v-else class="mname" :title="row.name">{{ row.name }}</span>
+          </div>
+          <div class="mmeta">
+            <span v-if="!row.isDir">{{ humanSize(row.size) }}</span>
+          </div>
+          <div class="mops">
+            <el-button size="small" type="primary" @click="openShare(row)">
+              {{ row.isDir ? t('mounts.shareDir') : t('common.share') }}
+            </el-button>
+            <el-button v-if="!row.isDir" size="small" type="success" @click="download(row)">
+              {{ t('common.download') }}
+            </el-button>
+          </div>
+        </div>
+      </div>
+      <el-empty v-if="!entries.length" :description="t('picker.emptyDir')" />
+    </div>
   </el-dialog>
 
   <!-- 移动到另一个逻辑文件夹 -->
-  <el-dialog v-model="moveVisible" :title="t('mounts.moveToTitle')" width="460px">
+  <el-dialog v-model="moveVisible" :title="t('mounts.moveToTitle')" width="min(460px, 92vw)">
     <p class="move-hint">{{ t('mounts.moveHint', { name: moveTarget?.name ?? '' }) }}</p>
     <el-select v-model="moveParentId" style="width: 100%">
       <el-option
@@ -837,7 +992,7 @@ onMounted(async () => {
   </el-dialog>
 
   <!-- 调整可见范围：所有人 / 仅自己 / 指定用户 -->
-  <el-dialog v-model="visVisible" :title="t('mounts.visibilityDialogTitle')" width="480px">
+  <el-dialog v-model="visVisible" :title="t('mounts.visibilityDialogTitle')" width="min(480px, 92vw)">
     <p class="move-hint">{{ t('mounts.visibilityFor', { name: visTarget?.name ?? '' }) }}</p>
     <el-form label-position="top">
       <el-form-item :label="t('mounts.visibilityLabel')">
@@ -1032,6 +1187,11 @@ onMounted(async () => {
   gap: 8px;
   width: 100%;
 }
+/* 输入框默认 width:100%，不压一下就会把「选择…」按钮挤到下一行 */
+.path-row .el-input {
+  flex: 1;
+  min-width: 0;
+}
 .mono {
   font-family: Consolas, Monaco, monospace;
   font-size: 12px;
@@ -1052,5 +1212,41 @@ onMounted(async () => {
   font-size: 12px;
   line-height: 1.5;
   color: #909399;
+}
+/* 浏览弹窗里的卡片列表：跟表格一样限高，内部滚动 */
+.browse-list {
+  max-height: 60vh;
+  overflow-y: auto;
+}
+@media (max-width: 767px) {
+  .bar {
+    gap: 8px;
+  }
+  /* Element 给相邻按钮加了 margin-left，折行后第一个按钮会被挤歪 */
+  .bar .el-button + .el-button,
+  .ops .el-button + .el-button {
+    margin-left: 0;
+  }
+  .bar .search {
+    width: 100%;
+  }
+  /* 「发布的是服务器本机已有内容…」这行说明在手机上要占两行，先让位给列表 */
+  .tip {
+    display: none;
+  }
+  .crumbs-row {
+    flex-wrap: wrap;
+  }
+  .crumbs {
+    flex: 1;
+    min-width: 0;
+  }
+  .match-tip {
+    flex-basis: 100%;
+    margin-left: 0;
+  }
+  .mtitle .row-icon {
+    margin-right: 0;
+  }
 }
 </style>

@@ -169,6 +169,7 @@ async function submit() {
 <style scoped>
 .page {
   min-height: 100vh;
+  min-height: 100dvh;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -180,7 +181,8 @@ async function submit() {
   right: 24px;
 }
 .box {
-  width: 380px;
+  /* 固定 380px + 左右 28px 内边距在 390px 屏上会顶出去，min() 兜住 */
+  width: min(380px, calc(100vw - 32px));
   background: #fff;
   padding: 28px;
   border-radius: 10px;
@@ -209,5 +211,19 @@ h2 {
   color: #c0c4cc;
   text-align: center;
   user-select: text;
+}
+@media (max-width: 767px) {
+  .page {
+    padding: 52px 12px 24px;
+    box-sizing: border-box;
+  }
+  .lang-bar {
+    top: 10px;
+    right: 12px;
+  }
+  .box {
+    box-sizing: border-box;
+    padding: 20px;
+  }
 }
 </style>

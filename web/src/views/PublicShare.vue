@@ -424,6 +424,7 @@ onUnmounted(stopPolling)
 <style scoped>
 .page {
   min-height: 100vh;
+  min-height: 100dvh;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -435,7 +436,8 @@ onUnmounted(stopPolling)
   right: 24px;
 }
 .box {
-  width: 420px;
+  /* 固定 420px 在 390px 屏上会溢出，min() 让它在窄屏退成「屏幕宽 - 左右留白」 */
+  width: min(420px, calc(100vw - 32px));
   background: #fff;
   padding: 28px;
   border-radius: 10px;
@@ -505,5 +507,31 @@ h2 {
 }
 .progress {
   margin-top: 12px;
+}
+@media (max-width: 767px) {
+  /* 上下留白替位置：内容比屏幕高时 lang-bar 不会压在卡片上 */
+  .page {
+    padding: 52px 12px 24px;
+    box-sizing: border-box;
+  }
+  .lang-bar {
+    top: 10px;
+    right: 12px;
+  }
+  /* width 用的是 content-box，不加这个 padding 会撑出屏幕 */
+  .box {
+    box-sizing: border-box;
+    padding: 18px;
+  }
+  h2 {
+    font-size: 16px;
+  }
+  /* 分享页大概率是别人用手机点开的，按钮给足高度 */
+  .btn {
+    min-height: 44px;
+  }
+  .meta {
+    gap: 6px 10px;
+  }
 }
 </style>

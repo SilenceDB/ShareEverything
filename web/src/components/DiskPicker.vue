@@ -137,7 +137,7 @@ watch(
   <el-dialog
     v-model="visible"
     :title="mode === 'file' ? t('picker.titleFile') : t('picker.titleDir')"
-    width="720px"
+    width="min(720px, 92vw)"
     append-to-body
   >
     <div class="picker">
@@ -271,5 +271,33 @@ watch(
   font-size: 12px;
   color: #909399;
   line-height: 32px;
+}
+@media (max-width: 767px) {
+  /* 手机上没有光标悬停，逐层点进去就是主路径：行要高、列表要占满可视区 */
+  .list {
+    height: 50vh;
+    height: 50dvh;
+  }
+  .row {
+    padding: 12px;
+    font-size: 14px;
+  }
+  .toolbar {
+    flex-wrap: wrap;
+  }
+  .root-select {
+    width: 100%;
+  }
+  /* 路径太长会把「上一级」挤走，单独占一行 */
+  .path {
+    flex-basis: 100%;
+  }
+  /* footer 的说明原本浮在左边，窄屏会把两个按钮顶到换行，改成独占一行 */
+  .hint {
+    float: none;
+    display: block;
+    margin-bottom: 8px;
+    line-height: 1.5;
+  }
 }
 </style>

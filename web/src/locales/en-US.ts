@@ -32,6 +32,7 @@ export default {
     mounts: 'Disk Library',
     shares: 'My Shares',
     users: 'Users',
+    menu: 'Menu',
   },
   account: {
     changePassword: 'Change password',
@@ -77,6 +78,8 @@ export default {
     batchDelete: 'Delete selected',
     batchDeleted: 'no items deleted | {n} item deleted | {n} items deleted',
     batchDeletePartial: 'Deleted {n}; these could not be removed: {names}',
+    /** "More actions" dropdown button on narrow-screen cards */
+    manage: 'Manage',
   },
 
   /* ---------------- 登录 / 注册 ---------------- */
@@ -130,6 +133,8 @@ export default {
   /* ---------------- 磁盘发布 ---------------- */
   mounts: {
     root: 'Library',
+    switchFolder: 'Folders',
+    folderTree: 'Folders',
     kind: {
       folder: 'Folder',
       dir: 'Directory',

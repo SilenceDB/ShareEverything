@@ -82,7 +82,7 @@ async function create() {
   <el-dialog
     :model-value="modelValue"
     :title="t('shareDialog.title')"
-    width="420px"
+    width="min(420px, 92vw)"
     @update:model-value="emit('update:modelValue', $event)"
   >
     <el-form label-position="top">

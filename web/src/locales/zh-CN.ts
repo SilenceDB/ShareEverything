@@ -33,6 +33,7 @@ export default {
     mounts: '磁盘发布',
     shares: '我的分享',
     users: '用户管理',
+    menu: '菜单',
   },
   account: {
     changePassword: '修改密码',
@@ -78,6 +79,8 @@ export default {
     batchDelete: '删除选中',
     batchDeleted: '已删除 {n} 项',
     batchDeletePartial: '已删除 {n} 项，以下未能删除：{names}',
+    /** 窄屏卡片里「更多操作」下拉按钮 */
+    manage: '管理',
   },
 
   /* ---------------- 登录 / 注册 ---------------- */
@@ -130,6 +133,8 @@ export default {
   /* ---------------- 磁盘发布 ---------------- */
   mounts: {
     root: '资源库',
+    switchFolder: '切换目录',
+    folderTree: '目录',
     kind: {
       folder: '文件夹',
       dir: '目录',

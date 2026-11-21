@@ -12,9 +12,12 @@ import { onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { api, type ShareItem } from '../api'
+import { useIsMobile } from '../composables/useIsMobile'
 import { copyTextWithFeedback } from '../utils/clipboard'
 
 const { t } = useI18n()
+/** 窄屏（<768px）：表格换成卡片列表 */
+const isMobile = useIsMobile()
 const list = ref<ShareItem[]>([])
 
 async function load() {
@@ -108,7 +111,8 @@ onMounted(load)
       <el-button @click="load">{{ t('common.refresh') }}</el-button>
     </div>
 
-    <el-table :data="list" style="width: 100%">
+    <!-- 桌面端用表格；窄屏（<768px）换成下面的卡片列表 -->
+    <el-table v-if="!isMobile" :data="list" style="width: 100%">
       <el-table-column :label="t('shares.colTitle')" min-width="260">
         <template #default="{ row }">
           <div>{{ row.title || t('shares.untitled') }}</div>
@@ -164,6 +168,55 @@ onMounted(load)
         <el-empty :description="t('shares.empty')" />
       </template>
     </el-table>
+
+    <div v-else class="mlist">
+      <div v-for="row in list" :key="row.id" class="mitem">
+        <div class="mmain">
+          <div class="mtitle">
+            <span class="mname">
+              {{ row.title || t('shares.untitled') }}
+              <el-tag v-if="row.isDir" size="small" type="warning">{{ t('common.dir') }}</el-tag>
+            </span>
+          </div>
+          <div class="mmeta">
+            <a :href="linkOf(row)" target="_blank" class="share-link">/s/{{ row.code }}</a>
+            <el-tag :type="statusTag(row)" size="small">{{ statusText(row) }}</el-tag>
+            <span>{{ row.targetType === 'FILE' ? t('shares.sourceFile') : t('shares.sourceMount') }}</span>
+            <span>
+              {{ t('shares.colDownloads') }} {{ row.downloadCount
+              }}<template v-if="row.maxDownloads"> / {{ row.maxDownloads }}</template>
+            </span>
+          </div>
+          <div class="mmeta">
+            <span>{{ t('shares.colCode') }}</span>
+            <el-link
+              v-if="row.accessCode"
+              type="primary"
+              :underline="false"
+              class="code"
+              :title="t('shares.copyCode')"
+              @click="copyCode(row)"
+            >
+              {{ row.accessCode }}
+            </el-link>
+            <el-tag v-else-if="row.accessCodeBroken" size="small" type="danger">
+              {{ t('shares.codeBroken') }}
+            </el-tag>
+            <span v-else class="muted">{{ t('common.noCode') }}</span>
+            <el-button link size="small" type="primary" @click="resetCode(row)">
+              {{ row.hasAccessCode ? t('shares.resetCode') : t('shares.setCode') }}
+            </el-button>
+          </div>
+          <div class="mops">
+            <el-button size="small" @click="copyLink(row)">{{ t('shares.copyLink') }}</el-button>
+            <el-button size="small" type="danger" @click="remove(row)">
+              {{ t('common.delete') }}
+            </el-button>
+          </div>
+        </div>
+      </div>
+      <el-empty v-if="!list.length" :description="t('shares.empty')" />
+    </div>
   </div>
 </template>
 

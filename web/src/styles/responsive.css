@@ -1,0 +1,187 @@
+/**
+ * ShareEverything - 磁盘资源发布与 Web 分享平台
+ *
+ * @author SilenceDB
+ * @license Apache-2.0
+ * SPDX-License-Identifier: Apache-2.0
+ * Copyright 2026 SilenceDB
+ */
+
+/**
+ * 全局响应式层。
+ *
+ * 只放两类东西：
+ *   1. **全局兜底**：所有弹层、按钮、正文留白在窄屏上的统一收敛；
+ *   2. **手机端共用的结构样式**（卡片列表 .mlist / .mitem …），供多个页面复用。
+ *
+ * 单页自己的布局细节仍然写在组件的 `<style scoped>` 里 —— 这里只处理
+ * 「无论哪个页面都必须一样」的部分。
+ *
+ * 断点：767 / 768 与 composables/useIsMobile.ts 的 MOBILE_QUERY 必须一致。
+ */
+
+/* 弹窗宽度兜底：组件里写的是固定像素（720、860…），窄屏一律收进视口。
+   max-width 永远优先于 width，所以不用去改每个 width="xxx px"。 */
+.el-dialog {
+  max-width: calc(100vw - 24px);
+}
+
+/* ---------------- 手机 / 窄屏 ---------------- */
+@media (max-width: 767px) {
+  /* 表格、卡片内部自带滚动，最外层不该再横着拖 */
+  html,
+  body {
+    overflow-x: hidden;
+  }
+
+  /* 默认 20px 的左右留白在 390px 屏上要吃掉 40px，收掉一半 */
+  .el-main {
+    padding: 12px;
+  }
+  .el-header {
+    padding: 0 12px;
+  }
+
+  /* 弹窗：顶部留白从 15vh 收到 8vh，内容超长时体内滚动而不是整页顶飞 */
+  .el-dialog {
+    --el-dialog-margin-top: 8vh;
+    margin-bottom: 24px;
+  }
+  .el-dialog__header {
+    padding: 14px 16px 6px;
+  }
+  .el-dialog__body {
+    padding: 12px 16px;
+    /* 老浏览器不认 dvh，先给一个 vh 兜底，认 dvh 的会覆盖掉 */
+    max-height: calc(100vh - 240px);
+    max-height: calc(100dvh - 240px);
+    overflow-y: auto;
+  }
+  .el-dialog__footer {
+    padding: 8px 16px 14px;
+  }
+  /* 确认框 / 输入框弹层是独立组件，不会跟着 el-dialog 走 */
+  .el-message-box {
+    max-width: calc(100vw - 32px);
+  }
+  .el-message {
+    min-width: 0;
+    max-width: calc(100vw - 24px);
+  }
+
+  /* 抽屉（侧栏菜单、目录树）不能占满整屏，留出可见的页面背景 */
+  .el-drawer.ltr,
+  .el-drawer.rtl {
+    max-width: 82vw;
+  }
+
+  /* 触控目标：手指比鼠标指针粗得多，40px 是下限；size="small" 的按钮单独提一点 */
+  .el-button {
+    min-height: 40px;
+  }
+  .el-button--small {
+    min-height: 36px;
+    padding: 8px 12px;
+  }
+  /* 表格里的文字按钮（el-button link）不能跟着变高，否则行距全乱 */
+  .el-button.is-link {
+    min-height: 30px;
+    padding: 2px 4px;
+  }
+  .el-tree-node__content {
+    height: 40px;
+  }
+  .el-dropdown-menu__item {
+    min-height: 40px;
+  }
+
+  /* 分页器：窄屏只留上一页 / 下一页 / 页码（当前项目尚未用到，留作兜底） */
+  .el-pagination__sizes,
+  .el-pagination__jump,
+  .el-pagination .el-pagination__total {
+    display: none !important;
+  }
+}
+
+/* ---------------- 手机端卡片列表 ----------------
+ * 表格在 390px 屏上就算藏到只剩两列也挤，所以窄屏直接换成一行一条的卡片。
+ * 这几个类名是跨页面共用的，因此放在全局而不是某个 scoped 里。
+ */
+.mlist {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.mitem {
+  display: flex;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 8px;
+  background: var(--el-bg-color);
+}
+/* 勾选框顶对齐，别跟着多行文字垂直居中 */
+.mcheck {
+  flex: none;
+  height: 22px;
+  margin-top: 1px;
+}
+.mmain {
+  flex: 1;
+  min-width: 0;
+}
+.mtitle {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: 14px;
+  line-height: 1.4;
+  color: var(--el-text-color-primary);
+}
+/* 文件名可能很长且没有空格，必须允许任意位置断行 */
+.mtitle .mname {
+  flex: 1;
+  min-width: 0;
+  word-break: break-all;
+}
+.mtitle .mname a,
+.mtitle a.mname {
+  color: var(--el-color-primary);
+  cursor: pointer;
+  text-decoration: none;
+}
+.mtitle .mname a:active,
+.mtitle a.mname:active {
+  text-decoration: underline;
+}
+.mmeta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  margin-top: 5px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--el-text-color-secondary);
+}
+/* 路径这类超长单行信息：一条占满，溢出省略（完整值挂在 title 上） */
+.mmeta .wide {
+  flex: 1 0 100%;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.mmeta .mono {
+  font-family: Consolas, Monaco, monospace;
+  font-size: 11px;
+}
+.mops {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+.mops .el-button {
+  margin-left: 0;
+}
