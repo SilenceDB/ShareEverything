@@ -16,7 +16,7 @@ import { useIsMobile } from '../composables/useIsMobile'
 import { copyTextWithFeedback } from '../utils/clipboard'
 
 const { t } = useI18n()
-/** 窄屏（<768px）：表格换成卡片列表 */
+/** 紧凑布局（≤1023px）：表格换成卡片列表 */
 const isMobile = useIsMobile()
 const list = ref<ShareItem[]>([])
 
@@ -111,7 +111,7 @@ onMounted(load)
       <el-button @click="load">{{ t('common.refresh') }}</el-button>
     </div>
 
-    <!-- 桌面端用表格；窄屏（<768px）换成下面的卡片列表 -->
+    <!-- 桌面端用表格；紧凑布局（≤1023px）换成下面的卡片列表 -->
     <el-table v-if="!isMobile" :data="list" style="width: 100%">
       <el-table-column :label="t('shares.colTitle')" min-width="260">
         <template #default="{ row }">

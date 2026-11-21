@@ -28,7 +28,7 @@ import DiskPicker from '../components/DiskPicker.vue'
 
 const { t } = useI18n()
 const store = useUserStore()
-/** 窄屏（<768px）：目录树收进抽屉，表格换成卡片列表 */
+/** 紧凑布局（≤1023px）：目录树收进抽屉，表格换成卡片列表 */
 const isMobile = useIsMobile()
 
 /** 资源库根节点在树里的占位 id；parentId 为空表示挂在根下 */
@@ -1218,7 +1218,7 @@ onMounted(async () => {
   max-height: 60vh;
   overflow-y: auto;
 }
-@media (max-width: 767px) {
+@media (max-width: 1023px) {
   .bar {
     gap: 8px;
   }

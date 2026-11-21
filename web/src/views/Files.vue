@@ -31,7 +31,7 @@ import {
 
 const { t } = useI18n()
 const store = useUserStore()
-/** 窄屏（<768px）：表格换成卡片列表，勾选用卡片上的复选框 */
+/** 紧凑布局（≤1023px）：表格换成卡片列表，勾选用卡片上的复选框 */
 const isMobile = useIsMobile()
 const parent = ref('')
 const items = ref<FileItem[]>([])
@@ -320,7 +320,7 @@ onMounted(load)
       </el-button>
     </div>
 
-    <!-- 桌面端用表格；窄屏（<768px）换成下面的卡片列表：表格在 390px 屏上横着滚，按钮还会被切掉 -->
+    <!-- 桌面端用表格；紧凑布局（≤1023px）换成下面的卡片列表：表格在这类宽度上横着滚，按钮还会被切掉 -->
     <el-table
       v-if="!isMobile"
       ref="tableRef"
@@ -483,7 +483,7 @@ onMounted(load)
 .row-icon.dir {
   color: #409eff;
 }
-@media (max-width: 767px) {
+@media (max-width: 1023px) {
   /* 工具栏在窄屏上每项独占一行，避免搜索框、策略选择互相挤 */
   .search,
   .policy {

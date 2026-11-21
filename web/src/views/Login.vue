@@ -212,7 +212,7 @@ h2 {
   text-align: center;
   user-select: text;
 }
-@media (max-width: 767px) {
+@media (max-width: 1023px) {
   .page {
     padding: 52px 12px 24px;
     box-sizing: border-box;

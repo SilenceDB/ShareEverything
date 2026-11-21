@@ -508,7 +508,7 @@ h2 {
 .progress {
   margin-top: 12px;
 }
-@media (max-width: 767px) {
+@media (max-width: 1023px) {
   /* 上下留白替位置：内容比屏幕高时 lang-bar 不会压在卡片上 */
   .page {
     padding: 52px 12px 24px;

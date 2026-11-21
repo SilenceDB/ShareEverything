@@ -109,7 +109,7 @@ onMounted(() => {
   user-select: text;
 }
 /* 手机抽屉里没有外层的 border-right，内部也不用留白，靠抽屉自己的 padding */
-@media (max-width: 767px) {
+@media (max-width: 1023px) {
   .logo {
     padding: 16px;
     font-size: 15px;

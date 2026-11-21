@@ -272,7 +272,7 @@ watch(
   color: #909399;
   line-height: 32px;
 }
-@media (max-width: 767px) {
+@media (max-width: 1023px) {
   /* 手机上没有光标悬停，逐层点进去就是主路径：行要高、列表要占满可视区 */
   .list {
     height: 50vh;

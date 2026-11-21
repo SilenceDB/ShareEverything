@@ -44,10 +44,17 @@ export function useMediaQuery(query: string): Ref<boolean> {
   return matches
 }
 
-/** 手机断点：与 responsive.css 的 `@media (max-width: 767px)` 对应 */
-export const MOBILE_QUERY = '(max-width: 767px)'
+/**
+ * 紧凑布局断点：与所有 `@media (max-width: 1023px)` 对应。
+ *
+ * 为什么不是 767：桌面结构（210px 侧栏 + 页面内 220px 目录树 + 五列表格）
+ * 在 1023 以下就装不下了 —— 平板竖屏（768~834）与手机横屏（844）掉进桌面布局时，
+ * 磁盘发布页的表格可视区只剩 318px，而四列最少 548px，「操作」整列被挤到横向滚动外，
+ * 看上去就是"表格坏了"。所以 1023 以下一律走抽屉 + 卡片。
+ */
+export const MOBILE_QUERY = '(max-width: 1023px)'
 
-/** 是否手机（窄屏）—— 需要「表格换卡片」「侧栏换抽屉」这类结构变化时用它 */
+/** 是否紧凑布局（手机全向、平板竖屏）—— 需要「表格换卡片」「侧栏换抽屉」时用它 */
 export function useIsMobile(): Ref<boolean> {
   return useMediaQuery(MOBILE_QUERY)
 }

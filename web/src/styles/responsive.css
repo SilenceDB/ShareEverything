@@ -17,7 +17,9 @@
  * 单页自己的布局细节仍然写在组件的 `<style scoped>` 里 —— 这里只处理
  * 「无论哪个页面都必须一样」的部分。
  *
- * 断点：767 / 768 与 composables/useIsMobile.ts 的 MOBILE_QUERY 必须一致。
+ * 断点：1023 与 composables/useIsMobile.ts 的 MOBILE_QUERY 必须一致。
+ * 取 1023 而不是 767，是因为桌面结构在 768~1023（平板竖屏、手机横屏）装不下：
+ * 侧栏 210 + 目录树 220 之后，五列表格只剩 300 多像素宽，「操作」列会被挤出可视区。
  */
 
 /* 弹窗宽度兜底：组件里写的是固定像素（720、860…），窄屏一律收进视口。
@@ -26,8 +28,8 @@
   max-width: calc(100vw - 24px);
 }
 
-/* ---------------- 手机 / 窄屏 ---------------- */
-@media (max-width: 767px) {
+/* ---------------- 紧凑布局：手机全向 + 平板竖屏 ---------------- */
+@media (max-width: 1023px) {
   /* 表格、卡片内部自带滚动，最外层不该再横着拖 */
   html,
   body {
@@ -111,6 +113,16 @@
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+/* 平板竖屏（768~1023）也用卡片，但一条卡片铺满 700px 会很空：排成两列 */
+@media (min-width: 768px) and (max-width: 1023px) {
+  .mlist {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    gap: 12px;
+    align-items: start;
+  }
 }
 .mitem {
   display: flex;

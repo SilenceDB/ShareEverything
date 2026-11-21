@@ -25,7 +25,7 @@ const { t, locale } = useI18n()
 
 const pwdVisible = ref(false)
 
-/** 手机端（<768px）：侧栏改成抽屉，由顶部汉堡按钮唤出 */
+/** 紧凑布局（≤1023px）：侧栏改成抽屉，由顶部汉堡按钮唤出 */
 const isMobile = useIsMobile()
 const drawer = ref(false)
 
@@ -198,7 +198,7 @@ body {
 .nav-drawer .el-drawer__body {
   padding: 0;
 }
-@media (max-width: 767px) {
+@media (max-width: 1023px) {
   .card {
     padding: 12px;
   }

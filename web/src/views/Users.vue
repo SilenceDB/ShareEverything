@@ -18,7 +18,7 @@ import { formatDateTime, humanSize } from '../utils/format'
 
 const { t } = useI18n()
 const store = useUserStore()
-/** 窄屏（<768px）：表格换成卡片列表 */
+/** 紧凑布局（≤1023px）：表格换成卡片列表 */
 const isMobile = useIsMobile()
 const list = ref<ManagedUser[]>([])
 const loading = ref(false)
@@ -346,7 +346,7 @@ onMounted(load)
 .u-progress {
   margin-top: 6px;
 }
-@media (max-width: 767px) {
+@media (max-width: 1023px) {
   /* 窄屏下「用户管理 + 数量 + 刷新 + 新建」放不下一行，让标题先占满一行 */
   .title {
     flex: 1 0 100%;
