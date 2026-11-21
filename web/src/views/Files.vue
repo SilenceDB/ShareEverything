@@ -330,19 +330,19 @@ onMounted(load)
       @selection-change="onSelectionChange"
     >
       <el-table-column type="selection" width="46" />
-      <el-table-column :label="t('common.name')" min-width="220">
+      <el-table-column :label="t('common.name')" min-width="170">
         <template #default="{ row }">
           <el-link v-if="row.isDir" type="primary" @click="enterDir(row)">{{ row.name }}</el-link>
           <span v-else>{{ row.name }}</span>
         </template>
       </el-table-column>
-      <el-table-column :label="t('common.size')" width="110">
+      <el-table-column :label="t('common.size')" width="100">
         <template #default="{ row }">{{ row.isDir ? '-' : human(row.size) }}</template>
       </el-table-column>
-      <el-table-column :label="t('files.uploadedAt')" width="180">
+      <el-table-column :label="t('files.uploadedAt')" width="160">
         <template #default="{ row }">{{ formatDateTime(row.createdAt) }}</template>
       </el-table-column>
-      <el-table-column :label="t('common.actions')" width="260">
+      <el-table-column :label="t('common.actions')" width="240">
         <template #default="{ row }">
           <el-button v-if="!row.isDir" size="small" @click="openShare(row)">
             {{ t('common.share') }}

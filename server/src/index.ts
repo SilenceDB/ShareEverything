@@ -150,7 +150,7 @@ app.setNotFoundHandler((req, reply) => {
  * 1. **HSTS**（默认开，max-age 半年）。浏览器收到后会记住「这个主机必须走 HTTPS」，
  *    之后再用 `http://` 访问会被自动升级成 `https://` —— 而服务端只有 HTTP，
  *    于是整个站点打不开，并且在 max-age 到期之前很难撤销。所以这里关掉，
- *    **等真正上了 HTTPS 再打开**（见 README「上线前必做」）。
+ *    **等真正上了 HTTPS 再打开**（见 README「上线前检查清单」与 DESIGN「HTTPS 与证书」）。
  * 2. **CSP 的 `upgrade-insecure-requests`**。道理同上：它让浏览器把页面里所有
  *    `http://` 请求升级成 `https://`，纯 HTTP 部署下等于全部请求失败。
  *

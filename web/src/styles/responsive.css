@@ -115,11 +115,12 @@
   gap: 10px;
 }
 
-/* 平板竖屏（768~1023）也用卡片，但一条卡片铺满 700px 会很空：排成两列 */
+/* 平板竖屏（768~1023）也用卡片，但一条卡片铺满 700px 会很空：排成两列。
+   auto-fit 而不是 auto-fill：只有一条时让它铺满，不会缩在左半边。 */
 @media (min-width: 768px) and (max-width: 1023px) {
   .mlist {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
     gap: 12px;
     align-items: start;
   }

@@ -641,7 +641,7 @@ onMounted(async () => {
             @selection-change="onSelectionChange"
           >
             <el-table-column type="selection" width="44" :selectable="selectable" />
-            <el-table-column :label="t('common.name')" min-width="200">
+            <el-table-column :label="t('common.name')" min-width="150">
               <template #default="{ row }">
                 <div class="name-cell">
                   <el-icon class="row-icon" :class="row.kind.toLowerCase()">
