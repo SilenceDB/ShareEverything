@@ -114,7 +114,7 @@ export default {
   /* ---------------- 文件库 ---------------- */
   files: {
     upload: '上传文件',
-    uploadTip: '一次只能上传一个文件；多个文件请先打包成压缩包再传',
+    uploadTip: '可一次选中多个文件；大文件自动分片，断了能续传',
     newFolder: '新建目录',
     folderNamePlaceholder: '目录名称',
     policyPrefix: '上传策略：{label}',
@@ -128,6 +128,9 @@ export default {
       '确定删除选中的 {n} 项？其中 {d} 个是目录，会连同里面的内容一起删除，且无法恢复。',
     mkdirDone: '已创建',
     uploadDone: '上传完成',
+    uploadBatchDone: '已上传 {n} 个文件',
+    uploadBatchPartial: '{ok} 个完成，{failed} 个失败',
+    uploadBatchCanceled: '{ok} 个完成，{canceled} 个已取消',
   },
 
   /* ---------------- 磁盘发布 ---------------- */
@@ -324,6 +327,10 @@ export default {
     pause: '暂停',
     resume: '继续',
     cancel: '取消',
+    summary: '已完成 {done}/{total} · {loaded} / {size} · {speed}',
+    pauseAll: '全部暂停',
+    resumeAll: '全部继续',
+    cancelAll: '全部取消',
   },
 
   /* ---------------- 修改密码 ---------------- */
@@ -399,6 +406,7 @@ export default {
     retrying: '重试中（并发降到 {n}）',
     reuploading: '补传 {n} 个分片',
     merging: '合并分片',
+    queued: '排队中',
   },
   downloadError: {
     noPicker: '当前浏览器不支持选择保存位置',

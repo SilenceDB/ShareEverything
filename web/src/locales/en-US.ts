@@ -114,7 +114,7 @@ export default {
   /* ---------------- 文件库 ---------------- */
   files: {
     upload: 'Upload file',
-    uploadTip: 'One file at a time. To upload several, pack them into an archive first.',
+    uploadTip: 'Pick as many files as you like. Large ones are chunked and can resume.',
     newFolder: 'New folder',
     folderNamePlaceholder: 'Folder name',
     policyPrefix: 'Upload mode: {label}',
@@ -128,6 +128,9 @@ export default {
       'Delete the {n} selected items? {d} of them are folders and will be removed along with everything inside. This cannot be undone.',
     mkdirDone: 'Created',
     uploadDone: 'Upload complete',
+    uploadBatchDone: 'Uploaded {n} files',
+    uploadBatchPartial: '{ok} done, {failed} failed',
+    uploadBatchCanceled: '{ok} done, {canceled} canceled',
   },
 
   /* ---------------- 磁盘发布 ---------------- */
@@ -325,6 +328,10 @@ export default {
     pause: 'Pause',
     resume: 'Resume',
     cancel: 'Cancel',
+    summary: '{done}/{total} done · {loaded} / {size} · {speed}',
+    pauseAll: 'Pause all',
+    resumeAll: 'Resume all',
+    cancelAll: 'Cancel all',
   },
 
   /* ---------------- 修改密码 ---------------- */
@@ -400,6 +407,7 @@ export default {
     retrying: 'Retrying (concurrency lowered to {n})',
     reuploading: 'Re-uploading {n} chunks',
     merging: 'Merging chunks',
+    queued: 'Queued',
   },
   downloadError: {
     noPicker: 'This browser cannot choose a save location',

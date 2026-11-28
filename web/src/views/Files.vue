@@ -17,7 +17,8 @@ import { useUserStore } from '../stores/user'
 import { useIsMobile } from '../composables/useIsMobile'
 import ShareDialog from '../components/ShareDialog.vue'
 import TransferPanel from '../components/TransferPanel.vue'
-import { uploadFile, type TransferControl, type TransferSnapshot } from '../utils/uploader'
+import type { TransferControl, TransferSnapshot } from '../utils/uploader'
+import { createUploadQueue, type BatchSummary } from '../utils/uploadQueue'
 import { nativeDownload, startDownload } from '../utils/downloader'
 import { formatDateTime, humanSize as human } from '../utils/format'
 import {
@@ -151,17 +152,75 @@ function goRoot() {
   load()
 }
 
+/* ---------------- 批量上传 ----------------
+ * 「上传文件」支持多选：选中的文件先整批入队、立刻以「排队中」出现在任务面板里，
+ * 再由队列按并发上限逐个送进 uploadFile —— 每个文件内部仍然是分片 + 断点续传，
+ * 只是文件与文件之间不再一拥而上。
+ */
+const summary = ref<BatchSummary | null>(null)
+let refreshTimer: number | undefined
+
+/** 每传完一个就刷一次列表会闪；合并成 1.2 秒一次，整批结束再立刻刷 */
+function scheduleRefresh() {
+  if (refreshTimer) return
+  refreshTimer = window.setTimeout(() => {
+    refreshTimer = undefined
+    void load()
+    void store.loadMe()
+  }, 1200)
+}
+
+function notifyBatch(s: BatchSummary) {
+  if (s.total <= 1) {
+    ElMessage.success(t('files.uploadDone'))
+  } else if (s.failed) {
+    ElMessage.warning(t('files.uploadBatchPartial', { ok: s.done, failed: s.failed }))
+  } else if (s.canceled) {
+    ElMessage.info(t('files.uploadBatchCanceled', { ok: s.done, canceled: s.canceled }))
+  } else {
+    ElMessage.success(t('files.uploadBatchDone', { n: s.done }))
+  }
+}
+
+const queue = createUploadQueue({
+  resolvePolicy: () => getPolicy(policyName.value),
+  onUpdate: upsertTransfer,
+  onSummary: (s) => {
+    summary.value = s
+  },
+  onBatchStart: () => {
+    // 上一批已经结束，旧行留着只会越堆越多：只清已结算的，还在传/下载的保持不动
+    const keep = transfers.value.filter(
+      (x) => x.status !== 'done' && x.status !== 'error' && x.status !== 'canceled',
+    )
+    const kept = new Set(keep.map((x) => x.key))
+    for (const k of [...controls.keys()]) if (!kept.has(k)) controls.delete(k)
+    transfers.value = keep
+  },
+  onFileDone: () => scheduleRefresh(),
+  onIdle: (s) => {
+    summary.value = s
+    // 队列结束时已经丢掉 File 引用；control 的闭包里同样握着文件，一并放掉
+    for (const x of transfers.value) {
+      if (x.status === 'done' || x.status === 'error' || x.status === 'canceled') {
+        controls.delete(x.key)
+      }
+    }
+    void load()
+    void store.loadMe()
+    notifyBatch(s)
+  },
+})
+
 function uploadRequest(opt: any) {
-  const control = uploadFile(opt.file, parent.value, {
-    policy: getPolicy(policyName.value),
-    onUpdate: upsertTransfer,
-    onDone: async () => {
-      ElMessage.success(t('files.uploadDone'))
-      await load()
-      await store.loadMe()
-    },
+  const id = queue.enqueue(opt.file, parent.value)
+  // 复用现有暂停/继续/取消的接线：面板按 key 回调，队列按 id 处理
+  controls.set(id, {
+    key: id,
+    pause: () => queue.pause(id),
+    resume: () => queue.resume(id),
+    cancel: () => queue.cancel(id),
   })
-  controls.set(control.key, control)
 }
 
 async function doMkdir() {
@@ -253,9 +312,13 @@ onMounted(load)
   <div class="card">
     <TransferPanel
       :tasks="transfers"
+      :summary="summary"
       @pause="(k) => controls.get(k)?.pause()"
       @resume="(k) => controls.get(k)?.resume()"
       @cancel="(k) => controls.get(k)?.cancel()"
+      @pause-all="queue.pauseAll()"
+      @resume-all="queue.resumeAll()"
+      @cancel-all="queue.cancelAll()"
     />
 
     <div class="bar">
@@ -263,7 +326,7 @@ onMounted(load)
         <el-upload
           :http-request="uploadRequest"
           :show-file-list="false"
-          :multiple="false"
+          multiple
           accept=""
         >
           <el-button type="primary">{{ t('files.upload') }}</el-button>
