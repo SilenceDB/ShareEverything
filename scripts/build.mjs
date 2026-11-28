@@ -10,15 +10,18 @@
 /**
  * 一键打包脚本：把前后端编译产物组装成一个可以直接拷走运行的目录。
  *
- *   node scripts/build.mjs          # 产出 dist/
- *   node scripts/build.mjs --zip    # 产出 dist/ 并压缩成 release/*.zip
+ *   node scripts/build.mjs            # 默认打离线包：产出 dist/ 并压缩成 release/*.zip
+ *   node scripts/build.mjs --standard # 标准包（不含依赖与 Node 运行时，目标机器需 npm install）
+ *   node scripts/build.mjs --no-zip   # 只出 dist 目录，跳过压缩（本地迭代验证用）
  *
  * 产出结构：
  *   dist/
  *     server/      后端编译后的 JS（入口 server/index.js）
  *     public/      前端构建产物
- *     prisma/      数据库 schema
- *     package.json 生产依赖（在 dist 里 npm install 即可独立运行）
+ *     prisma/      数据库 schema（离线包另有预建好的 dev.db）
+ *     package.json 生产依赖声明
+ *     node_modules/ prisma client  离线包才有，目标机器无需 npm install
+ *     node/        Node 运行时         离线包才有，目标机器无需装 Node
  *     .env         首次打包时自动生成，含随机 JWT_SECRET 与 ACCESS_CODE_KEY；重打包会保留
  *     VERSION      本次发布的版本号（= 发包时刻，如 2026.10.12.1031）
  *     build-info.json  版本号 + 打包时间 + 打包模式
@@ -33,8 +36,20 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const args = process.argv.slice(2)
-/** 离线包：把生产依赖、Prisma 引擎、Node 运行时全部塞进包里，目标机器断网也能跑 */
-const offline = args.includes('--offline') || args.includes('-o')
+/**
+ * 打包模式：**默认离线包**。
+ *
+ * 离线包把生产依赖、Prisma 引擎、预建数据库、Node 运行时全部塞进包里，目标机器断网、
+ * 没装 Node 也能双击 start.bat 就跑。发布出去的东西本来就该是这种"拷过去就能用"的形态，
+ * 所以默认走它；标准包退化成显式选项。
+ *
+ *   （无参数）       离线包，并压缩
+ *   --standard      标准包（需目标机器 npm install + 装 Node），并压缩
+ *   --offline / -o  同上但显式写明（保留兼容，等价于默认）
+ *   --no-offline    等价 --standard
+ *   --no-zip        只出目录，不压缩
+ */
+const offline = !args.includes('--standard') && !args.includes('--no-offline')
 // --no-zip：只出目录不出压缩包。迭代验证时用，压缩那一步很慢
 const wantZip = (offline || args.includes('--zip') || args.includes('-z')) && !args.includes('--no-zip')
 
@@ -774,7 +789,8 @@ await step('生成运行配置', () => {
       '',
       '## 重新打包',
       '',
-      '在源码目录执行 `npm run pack:offline`（离线包）或 `npm run pack`（标准包）。',
+      '在源码目录执行 `npm run pack`（**默认离线包**，拷过去双击就能跑）。',
+      '需要薄的标准包时用 `npm run pack:standard`；只要目录不要压缩包时用 `npm run pack:dir`。',
       '已存在的 `dist/.env` 会被保留，不会被覆盖；版本号则每次按新的发包时刻重新生成。',
       '',
     ].join('\n'),

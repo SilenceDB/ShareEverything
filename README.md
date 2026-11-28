@@ -100,11 +100,14 @@ npm run dev:web
 
 在**源码目录**（`ShareEverything/`，就是有 `package.json` 的那层）执行：
 
-| 命令 | 产出 | 适用场景 |
-| --- | --- | --- |
-| `npm run pack` | `dist/` 目录 | 目标机器能联网，自己跑 |
-| `npm run pack:zip` | `dist/` + `release/*.zip`（约 2MB） | 拷给别人，对方自己 `npm install` |
-| `npm run pack:offline` | `dist/` + `release/*-offline-*.zip`（约 100MB） | **目标机器断网**，双击就能跑 |
+| 命令                      | 产出                                            | 适用场景                             |
+| ----------------------- | --------------------------------------------- | -------------------------------- |
+| `npm run pack`          | `dist/` + `release/*-offline-*.zip`（约 104MB）  | **默认**：目标机器断网、没装 Node，双击就能跑      |
+| `npm run pack:offline`  | 同上（显式写法，便于脚本里表明意图）                             | 同上                               |
+| `npm run pack:dir`      | 只有 `dist/` 目录，不压缩                             | 本机迭代验证，省掉压包那 1~3 分钟              |
+| `npm run pack:standard` | `dist/` + `release/*.zip`（约 2MB）              | 对方能联网、愿意自己 `npm install`          |
+
+> 以前 `npm run pack` 出的是标准包，现在**默认改成离线包**了。要标准包请显式用 `pack:standard`。
 
 产物结构：
 
@@ -158,14 +161,14 @@ dist/
 - 启动日志第二行：`版本: 0.2.0+2026.10.17.2244（2026-10-17 22:44:56 打包）`
 - `GET /api/version`（公开，无需登录）；`GET /api/health` 里也带 `version` 字段
 
-### 离线包
+### 离线包（默认，`npm run pack`）
 
 目标机器**什么都不用装、不用联网**：依赖、Prisma 引擎、Node 运行时、建好表的 SQLite 库全部在包里。
-多了三步：在包内 `npm install --omit=dev` → `prisma generate` + `db push` 预建库 → 拷贝 Node 运行时。
+比标准包多了三步：在包内 `npm install --omit=dev` → `prisma generate` + `db push` 预建库 → 拷贝 Node 运行时。
 
 体积参考（0.2.0 实测）：目录 **289MB**，压缩包 **104MB**（`node.exe` 占 83MB，是压缩包的主体）。
 压缩这一步比较慢（几千个小文件 + 80MB 的 node.exe），视磁盘速度约 1~3 分钟；
-只要目录不要压缩包的话用 `npm run pack` 更快。
+只要目录不要压缩包的话用 `npm run pack:dir` 更快。
 
 ---
 

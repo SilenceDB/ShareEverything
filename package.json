@@ -17,8 +17,10 @@
     "typecheck": "npm run typecheck -w server && npm run typecheck -w web",
     "check:i18n": "tsx scripts/check-i18n.ts",
     "pack": "node scripts/build.mjs",
-    "pack:zip": "node scripts/build.mjs --zip",
     "pack:offline": "node scripts/build.mjs --offline",
+    "pack:standard": "node scripts/build.mjs --standard --zip",
+    "pack:dir": "node scripts/build.mjs --no-zip",
+    "pack:zip": "node scripts/build.mjs --zip",
     "db:push": "npm run db:push -w server",
     "db:studio": "npm run db:studio -w server"
   },
